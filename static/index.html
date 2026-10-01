@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShopMate - Multi-Agent AI</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <div class="logo-icon"><i class="fa-solid fa-robot"></i></div>
+                <span>ShopMate</span>
+            </div>
+            <button class="new-chat-btn"><i class="fa-solid fa-plus"></i> New Chat</button>
+            <nav class="nav-menu">
+                <a href="#" class="active"><i class="fa-solid fa-house"></i> Home</a>
+                <a href="#"><i class="fa-solid fa-box"></i> Orders</a>
+                <a href="#"><i class="fa-solid fa-cart-shopping"></i> Cart <span class="badge">2</span></a>
+                <a href="#"><i class="fa-regular fa-heart"></i> Saved Products</a>
+                <a href="#"><i class="fa-solid fa-tag"></i> Deals</a>
+            </nav>
+            <div class="recent-chats">
+                <h3>Recent Chats</h3>
+                <a href="#"><i class="fa-regular fa-message"></i> Compare iPhone 17 vs S26</a>
+                <a href="#"><i class="fa-regular fa-message"></i> Track order #12345</a>
+                <a href="#"><i class="fa-regular fa-message"></i> Laptops under 70000</a>
+                <a href="#"><i class="fa-regular fa-message"></i> Return policy</a>
+            </div>
+            <div class="user-profile">
+                <div class="avatar">DM</div>
+                <div class="user-info">
+                    <span class="name">Divya Musahib</span>
+                    <span class="plan">Premium User</span>
+                </div>
+                <i class="fa-solid fa-gear settings-icon"></i>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <header class="chat-header">
+                <div class="search-bar">
+                    <i class="fa-solid fa-search"></i>
+                    <input type="text" placeholder="Search products, orders...">
+                </div>
+                <div class="header-actions">
+                    <div class="model-selector">Model: <strong>ShopMate Multi-Agent</strong> <i class="fa-solid fa-chevron-down"></i></div>
+                    <button class="icon-btn"><i class="fa-regular fa-moon"></i></button>
+                    <div class="avatar small">DM</div>
+                </div>
+            </header>
+
+            <div class="chat-messages" id="chat-container">
+                <!-- Welcome Message -->
+                <div class="message system">
+                    <div class="message-content hero">
+                        <h1>Your Shopping Assistant, <span class="gradient-text">Reimagined</span></h1>
+                        <p>Get product recommendations, track orders, compare products, and resolve issues — with a team of specialized AI agents working together for you.</p>
+                        <div class="agent-pills">
+                            <span class="pill"><i class="fa-solid fa-magnifying-glass"></i> Product Agent</span>
+                            <span class="pill"><i class="fa-solid fa-box-open"></i> Order Agent</span>
+                            <span class="pill"><i class="fa-solid fa-tag"></i> Deals Agent</span>
+                            <span class="pill"><i class="fa-solid fa-cart-arrow-down"></i> Cart Agent</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <div class="input-wrapper">
+                    <button class="icon-btn"><i class="fa-solid fa-paperclip"></i></button>
+                    <button class="icon-btn"><i class="fa-solid fa-globe"></i></button>
+                    <input type="text" id="chat-input" placeholder="Ask anything about products, orders, returns, or deals...">
+                    <button class="smart-btn"><i class="fa-solid fa-bolt"></i> Smart <i class="fa-solid fa-chevron-down"></i></button>
+                    <button class="send-btn" id="send-btn"><i class="fa-solid fa-paper-plane"></i></button>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>

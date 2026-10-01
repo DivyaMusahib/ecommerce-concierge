@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Environment secrets - NEVER commit this
+.env
+
+# FAISS vector store index (rebuilt from faq.md on first run)
+data/faq_faiss_index/
+
+# SQLite database (local dev only)
+*.db
+*.sqlite3
+
+# Test outputs
+tests/golden_results.json
+
+# IDE / OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Logs
+*.log

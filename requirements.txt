@@ -1,0 +1,31 @@
+# Core API
+fastapi
+uvicorn[standard]
+pydantic
+pydantic[email]
+python-dotenv
+python-multipart
+
+# LangChain / LangGraph / LLM
+langchain
+langchain-core
+langchain-google-genai
+langchain-community
+langgraph
+langsmith
+langchain-huggingface
+
+# Vector Search & Embeddings
+faiss-cpu
+sentence-transformers
+
+# AI Provider
+google-genai
+
+# Auth & Security
+PyJWT
+passlib
+bcrypt
+
+# Rate Limiting
+slowapi

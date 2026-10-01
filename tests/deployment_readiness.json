@@ -1,0 +1,85 @@
+{
+  "timestamp": "2026-10-01T12:24:22.980801",
+  "total": 19,
+  "passed": 19,
+  "failed": 0,
+  "ready_to_deploy": true,
+  "checks": [
+    {
+      "check": "GEMINI_API_KEY set",
+      "status": "PASS"
+    },
+    {
+      "check": "JWT_SECRET_KEY set",
+      "status": "PASS"
+    },
+    {
+      "check": "JWT_SECRET_KEY not hardcoded",
+      "status": "PASS"
+    },
+    {
+      "check": "bcrypt installed",
+      "status": "PASS"
+    },
+    {
+      "check": "PyJWT installed",
+      "status": "PASS"
+    },
+    {
+      "check": "Database initializes without error",
+      "status": "PASS"
+    },
+    {
+      "check": "Demo user exists with correct email",
+      "status": "PASS"
+    },
+    {
+      "check": "Demo user password is bcrypt hashed",
+      "status": "PASS"
+    },
+    {
+      "check": "shipping_address column exists",
+      "status": "PASS"
+    },
+    {
+      "check": "draft_orders table exists",
+      "status": "PASS"
+    },
+    {
+      "check": "delivery_fee column in confirmed_orders",
+      "status": "PASS"
+    },
+    {
+      "check": "Mock orders scoped to user_1 only",
+      "status": "PASS"
+    },
+    {
+      "check": "Guest blocked from checkout",
+      "status": "PASS"
+    },
+    {
+      "check": "Guest blocked from refunds",
+      "status": "PASS"
+    },
+    {
+      "check": "Server-side price recalculation active",
+      "status": "PASS"
+    },
+    {
+      "check": "Admin /users route removed",
+      "status": "PASS"
+    },
+    {
+      "check": "_latest_summaries removed from cart_api",
+      "status": "PASS"
+    },
+    {
+      "check": "Health endpoint responds",
+      "status": "PASS"
+    },
+    {
+      "check": "Login endpoint works",
+      "status": "PASS"
+    }
+  ]
+}

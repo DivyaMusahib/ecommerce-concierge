@@ -1,0 +1,230 @@
+"""
+FastAPI Routes - Chat, memory, checkout confirmation, session, and admin endpoints.
+"""
+from fastapi import APIRouter, Request, HTTPException
+from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
+
+
+class ChatRequest(BaseModel):
+    message: str
+    user_id: str = "guest"
+    session_id: str = "default_session"
+
+
+class ChatResponse(BaseModel):
+    response: str
+    intent: str | None = None
+    urgency: str | None = None
+    agents_used: list[str] = []
+    confirmation_required: bool = False
+    checkout_summary: dict | None = None
+    latency_ms: float | None = None
+    memory_updated: bool = False
+
+
+class CheckoutConfirmRequest(BaseModel):
+    session_id: str
+    user_id: str = "default"
+    draft_summary: dict  # checkout_summary dict from CartAgent
+    delivery_fee: float = 0  # client-provided delivery fee (capped server-side)
+
+
+import time
+import json
+from app.orchestrator.supervisor import supervisor
+
+
+@router.post("/chat", response_model=ChatResponse)
+@limiter.limit("20/minute")
+async def chat_endpoint(request: Request, body: ChatRequest):
+    """Process a user message through the full multi-agent pipeline."""
+    t_start = time.perf_counter()
+
+    # Record pre-request memory state for change detection
+    from app.memory.long_term import get_user_profile, ensure_user_exists
+    ensure_user_exists(body.user_id)
+    pre_profile = get_user_profile(body.user_id)
+    pre_updated = pre_profile.get("updated_at", "") if pre_profile else ""
+
+    response, intent_result, agents_used = await supervisor.process_request(
+        body.message,
+        session_id=body.session_id,
+        user_id=body.user_id,
+    )
+
+    latency_ms = round((time.perf_counter() - t_start) * 1000, 1)
+
+    intent_str = None
+    urgency = None
+    if intent_result:
+        intent_str = ", ".join(intent_result.intents)
+        urgency = intent_result.urgency
+
+    # Detect confirmation_required from CartAgent checkout response
+    confirmation_required = False
+    checkout_summary = None
+    
+    from app.tools.cart_api import get_latest_checkout_summary
+    latest_summary = get_latest_checkout_summary(body.session_id)
+    if latest_summary:
+        confirmation_required = True
+        checkout_summary = latest_summary
+        
+        # Clean up any leftover raw JSON in the LLM's text response if it outputted it anyway
+        import re
+        response = re.sub(r'```(?:json)?\s*\{.*?\}\s*```', '', response, flags=re.DOTALL).strip()
+        
+        # If response is empty or just JSON, give a default prompt
+        if not response or response.startswith("{"):
+            response = "Please review your order summary and confirm below to place the order."
+
+    # Detect if memory was updated during this request
+    memory_updated = False
+    try:
+        post_profile = get_user_profile(body.user_id)
+        if post_profile:
+            post_updated = post_profile.get("updated_at", "")
+            if post_updated and post_updated != pre_updated:
+                memory_updated = True
+    except Exception:
+        pass
+
+    return ChatResponse(
+        response=response,
+        intent=intent_str,
+        urgency=urgency,
+        agents_used=agents_used or [],
+        confirmation_required=confirmation_required,
+        checkout_summary=checkout_summary,
+        latency_ms=latency_ms,
+        memory_updated=memory_updated,
+    )
+
+
+# ── Checkout Confirmation ─────────────────────────────────────────────────────
+
+@router.post("/checkout/confirm")
+async def confirm_checkout_endpoint(body: CheckoutConfirmRequest):
+    """
+    Actually place the order after user confirms in the UI.
+    Writes to confirmed_orders, clears the cart for this session.
+    """
+    from app.tools.cart_api import confirm_checkout
+    try:
+        result = confirm_checkout(
+            session_id=body.session_id,
+            user_id=body.user_id,
+            draft_summary=body.draft_summary,
+            delivery_fee=body.delivery_fee,
+        )
+        return {"status": "confirmed", **result}
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Checkout failed: {str(e)}")
+
+
+# ── Orders ────────────────────────────────────────────────────────────────────
+
+@router.get("/orders/confirmed/{user_id}")
+async def get_confirmed_orders(user_id: str):
+    """Return all confirmed orders placed by the user."""
+    from app.database.db import get_conn
+    import json as _json
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM confirmed_orders WHERE user_id = ? ORDER BY placed_at DESC",
+            (user_id,)
+        ).fetchall()
+    orders = []
+    for r in rows:
+        o = dict(r)
+        try:
+            o["items"] = _json.loads(o["items_json"])
+        except Exception:
+            o["items"] = []
+        del o["items_json"]
+        orders.append(o)
+    return {"orders": orders}
+
+
+# ── Session ───────────────────────────────────────────────────────────────────
+
+@router.delete("/session/{session_id}")
+async def clear_session(session_id: str):
+    """Clear short-term chat history for a session (used by New Chat button)."""
+    from app.memory.session import redis_client
+    redis_client.clear(session_id)
+    return {"status": "cleared", "session_id": session_id}
+
+
+@router.delete("/cart/{session_id}")
+async def clear_cart(session_id: str):
+    """Clear the cart for a session (used by New Chat button to prevent stale items)."""
+    from app.database.db import get_conn
+    with get_conn() as conn:
+        conn.execute("DELETE FROM carts WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM draft_orders WHERE session_id = ?", (session_id,))
+        conn.commit()
+    return {"status": "cleared", "session_id": session_id}
+
+
+# ── Memory Endpoints ──────────────────────────────────────────────────────────
+
+@router.get("/memory/{user_id}")
+async def get_memory(user_id: str):
+    """Return the full long-term profile and preferences for a user."""
+    from app.memory.long_term import get_user_profile, ensure_user_exists
+    ensure_user_exists(user_id)
+    profile = get_user_profile(user_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+    return profile
+
+
+@router.delete("/memory/{user_id}/preference/{key}")
+async def forget_preference(user_id: str, key: str):
+    """Delete a single preference key from a user's long-term memory."""
+    from app.memory.long_term import delete_preference
+    updated = delete_preference(user_id, key)
+    return {"status": "deleted", "remaining_preferences": updated}
+
+
+@router.delete("/memory/{user_id}/all")
+async def clear_memory(user_id: str):
+    """Wipe all saved preferences for a user (keeps their profile)."""
+    from app.memory.long_term import clear_all_preferences
+    clear_all_preferences(user_id)
+    return {"status": "cleared", "user_id": user_id}
+
+
+@router.put("/memory/{user_id}/preference")
+async def save_preference_endpoint(user_id: str, body: dict):
+    """Manually save a preference (key/value). Body: {key: str, value: str}"""
+    from app.memory.long_term import save_preference
+    key = body.get("key", "").strip()
+    value = body.get("value", "").strip()
+    if not key or not value:
+        raise HTTPException(status_code=400, detail="Both 'key' and 'value' are required.")
+    updated = save_preference(user_id, key, value)
+    return {"status": "saved", "preferences": updated}
+
+
+@router.patch("/profile/{user_id}")
+async def update_profile(user_id: str, body: dict):
+    """Update a top-level profile field (name or default_shipping). Body: {field: str, value: str}"""
+    from app.memory.long_term import update_profile_field
+    field = body.get("field", "").strip()
+    value = body.get("value", "").strip()
+    if not field or not value:
+        raise HTTPException(status_code=400, detail="Both 'field' and 'value' are required.")
+    success = update_profile_field(user_id, field, value)
+    if not success:
+        raise HTTPException(status_code=400, detail=f"Field '{field}' is not allowed. Only 'name' can be updated via this endpoint.")
+    return {"status": "updated", "field": field, "value": value}
+
