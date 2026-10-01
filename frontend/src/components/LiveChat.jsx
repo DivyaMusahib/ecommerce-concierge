@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import { PastelBlobs } from './Backgrounds';
 import { AuthModal } from './AuthModal';
 
-const API_BASE = 'http://127.0.0.1:8000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 
 const QUICK = [
   { label: '📦 Track order #123', q: 'Where is my order #123?' },
