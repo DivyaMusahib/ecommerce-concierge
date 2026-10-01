@@ -33,7 +33,11 @@ logger = logging.getLogger("shopmate")
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 # ── CORS Origins (configurable via environment) ───────────────────────────────
-_default_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_default_origins = [
+    "http://localhost:5173", 
+    "http://127.0.0.1:5173",
+    "https://shopmate-ecommerce-concierge.vercel.app"
+]
 _env_origins = os.getenv("CORS_ORIGINS", "")
 ALLOWED_ORIGINS = (
     [o.strip() for o in _env_origins.split(",") if o.strip()]
