@@ -78,12 +78,34 @@ def _fuzzy_match(query: str) -> dict | list | None:
 
     # ── Step 2: Check for query fully contained in product name ─────────────
     # e.g. query='Dell XPS 15' → name contains it → strong match
-    # Also collect all name-containment matches to check for ambiguity
-    name_matches = [r for r in rows_as_dicts if q in r["name"].lower()]
-    if len(name_matches) == 1:
-        return name_matches[0]
-    if len(name_matches) > 1:
-        return name_matches  # Ambiguous name match
+    # Split into STRICT matches (query ends the name, or is followed only by a SKU
+    # in parentheses like "(256GB)") vs LOOSE matches (query is a prefix of a longer
+    # name, e.g. "iphone 18 pro" inside "iphone 18 pro MAX (256GB)").
+    # This prevents "iPhone 18 Pro" from being ambiguous with "iPhone 18 Pro Max".
+    import re as _re
+    strict_matches, loose_matches = [], []
+    for r in rows_as_dicts:
+        name = r["name"].lower()
+        if q not in name:
+            continue
+        idx = name.find(q)
+        after = name[idx + len(q):].strip()
+        # Strict: nothing follows, or only a parenthesised SKU/size like "(256gb)"
+        if not after or _re.match(r'^\(.*\)$', after):
+            strict_matches.append(r)
+        else:
+            loose_matches.append(r)
+
+    if len(strict_matches) == 1:
+        return strict_matches[0]
+    if len(strict_matches) > 1:
+        return strict_matches  # Truly ambiguous strict matches
+    # Fall back to all name matches (strict + loose) if no strict winner
+    all_name_matches = strict_matches + loose_matches
+    if len(all_name_matches) == 1:
+        return all_name_matches[0]
+    if len(all_name_matches) > 1:
+        return all_name_matches  # Ambiguous name match
 
     # ── Step 3: Scored word-level matching ──────────────────────────────────
     # Query words — filter out 1-letter stop-words to preserve numbers and short brands

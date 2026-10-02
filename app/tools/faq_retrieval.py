@@ -16,7 +16,7 @@ _FAQ_PATH = os.path.join(_DIR, "..", "..", "data", "faq.md")
 _INDEX_PATH = os.path.join(_DIR, "..", "..", "data", "faq_faiss_index_gemini")
 
 # Gemini embeddings
-_EMBEDDING_MODEL = "models/text-embedding-004"
+_EMBEDDING_MODEL = "models/text-embedding-005"
 
 vector_store = None
 _embeddings = None
