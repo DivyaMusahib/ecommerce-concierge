@@ -86,12 +86,10 @@ def _fuzzy_match(query: str) -> dict | list | None:
         return name_matches  # Ambiguous name match
 
     # ── Step 3: Scored word-level matching ──────────────────────────────────
-    # Query words — filter out very short stop-words to reduce noise
-    words = [w for w in q.split() if len(w) > 2]
-    if not words and len(q) > 2:
-        words = [q]
+    # Query words — filter out 1-letter stop-words to preserve numbers and short brands
+    words = [w for w in q.split() if len(w) > 1]
     if not words:
-        return None
+        words = [q]
 
     scores: list[tuple[int, dict]] = []
 
@@ -102,12 +100,12 @@ def _fuzzy_match(query: str) -> dict | list | None:
         score = 0
 
         for word in words:
-            # Key match: very strong signal (unique identifiers)
-            if word in key:
-                score += 8
-            # Name match: strong signal
-            elif word in name:
+            # Name match: strong signal (check first to prioritize visible names over internal keys)
+            if word in name:
                 score += 6
+            # Key match: moderate signal (avoids substring issues like '18pro' beating '17 pro')
+            elif word in key:
+                score += 4
             # Synonym match: weak signal (only confirms, not determines)
             elif word in synonyms:
                 score += 2

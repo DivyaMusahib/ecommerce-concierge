@@ -105,6 +105,9 @@ def add_to_cart(product_name: str, quantity: int = 1) -> str:
     If the item is already in the cart, its quantity is updated instead of duplicating.
     Returns the updated cart summary.
     """
+    if quantity <= 0:
+        return json.dumps({"error": "Quantity must be greater than 0."})
+
     from app.tools.product_api import _fuzzy_match, _format_product
     match = _fuzzy_match(product_name)
 
@@ -159,20 +162,37 @@ def add_to_cart(product_name: str, quantity: int = 1) -> str:
 
 
 @tool
-def remove_from_cart(product_name: str) -> str:
-    """Remove a product from the user's cart by name."""
+def remove_from_cart(product_name: str, quantity: int = 1) -> str:
+    """Remove a product from the user's cart by name. Will decrement quantity if available."""
+    from app.tools.product_api import _fuzzy_match
+    
     sid = _sid()
     cart = _get_cart(sid)
     items = cart["items"]
-    q = product_name.lower()
+    
+    match = _fuzzy_match(product_name)
+    if not match:
+        return json.dumps({"error": f"Product '{product_name}' not found."})
+    if isinstance(match, list):
+        return json.dumps({
+            "error": "Ambiguous product — multiple matches found.",
+            "message": f"I found {len(match)} products matching '{product_name}'. Please be more specific."
+        })
+        
+    key = match["product_key"]
 
     for i, item in enumerate(items):
-        if q in item["product_key"] or q in item["name"].lower():
-            removed = items.pop(i)
-            _save_cart(sid, items, cart["coupon_code"])
-            return json.dumps({"action": "removed", "product": removed["name"], "cart_size": len(items)})
+        if item["product_key"] == key:
+            if item["quantity"] > quantity:
+                item["quantity"] -= quantity
+                _save_cart(sid, items, cart["coupon_code"])
+                return json.dumps({"action": "decremented", "product": item["name"], "new_quantity": item["quantity"], "cart_size": len(items)})
+            else:
+                removed = items.pop(i)
+                _save_cart(sid, items, cart["coupon_code"])
+                return json.dumps({"action": "removed", "product": removed["name"], "cart_size": len(items)})
 
-    return json.dumps({"error": f"'{product_name}' is not in your cart."})
+    return json.dumps({"error": f"'{match['name']}' is not in your cart."})
 
 
 @tool

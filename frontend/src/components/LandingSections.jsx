@@ -101,7 +101,7 @@ export function Hero({ onDemoClick, isDark, setIsDark }) {
 
 const STEPS = [
   { emoji: '💬', n: '01', title: 'You Ask', desc: 'Type a natural language query like "Track order #123" or "Compare iPhone vs Samsung"', color: '#a78bfa' },
-  { emoji: '🧠', n: '02', title: 'Intent Classification', desc: 'LangChain structured output with Pydantic schema parses intent, urgency & entities', color: '#60a5fa' },
+  { emoji: '🧠', n: '02', title: 'Intent Classification', desc: 'Hybrid routing: 0-latency Regex for common intents, falling back to Pydantic structured LLMs.', color: '#60a5fa' },
   { emoji: '⚡', n: '03', title: 'LangGraph Supervisor', desc: 'StateGraph orchestrator routes to agents concurrently via asyncio.gather', color: '#f472b6' },
   { emoji: '🔧', n: '04', title: 'ReAct Agents', desc: 'LangGraph ReAct agents execute tool calls against SQLite-backed APIs (Product, Order, Cart, FAQ, Deals, Complaint)', color: '#34d399' },
   { emoji: '🛡', n: '05', title: 'Guardrails + QA', desc: 'PII masking, prompt-injection detection, then a second LLM evaluator critiques the response', color: '#fb923c' },
@@ -150,7 +150,7 @@ const AGENTS = [
     emoji: '🛒', name: 'Product Agent', intent: 'PRODUCT_INQUIRY',
     color: '#a78bfa', bgLight: 'rgba(167,139,250,0.08)',
     desc: 'LangGraph ReAct agent with tool calling. Searches product catalog for pricing, stock, ratings, specs, and offers.',
-    capabilities: ['Price lookup', 'Stock status', 'Product search', 'Category filter'],
+    capabilities: ['Price lookup', 'Stock status', 'Typo-Tolerant Search', 'Category filter'],
     try: 'Tell me about the iPhone 17 Pro',
   },
   {

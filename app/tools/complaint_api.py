@@ -59,33 +59,57 @@ def issue_auto_refund(order_id: str, amount: float, reason: str) -> str:
     """
     uid = _current_user.get()
 
-    # Guest restriction
     if uid == "guest":
-        return json.dumps({
-            "error": "guest_restricted",
-            "message": "You need to sign in or create an account to request a refund. "
-                       "Please use the Sign In button to continue.",
-        })
+        return json.dumps({"error": "guest_restricted", "message": "Please sign in to request a refund."})
+
+    if amount <= 0:
+        return json.dumps({"error": "Refund amount must be greater than 0."})
 
     if amount > 5000:
-        return json.dumps({
-            "action": "denied",
-            "reason": f"Auto-refund limit is Rs.5000. Requested Rs.{amount} exceeds this limit. Please use escalate_to_human instead.",
-        })
+        return json.dumps({"action": "denied", "reason": f"Auto-refund limit is Rs.5000. Requested Rs.{amount} exceeds this limit. Please escalate."})
 
-    refund_id = f"REF-{uuid.uuid4().hex[:6].upper()}"
-    created_at = datetime.utcnow().isoformat()
-
+    clean_id = order_id.strip().lstrip("#").replace("ORD-", "").replace("ORD", "").lstrip("0") or "0"
+    
     with get_conn() as conn:
+        # Check if already refunded
+        existing_refund = conn.execute(
+            "SELECT 1 FROM refunds WHERE (order_id = ? OR order_id = ?) AND user_id = ?",
+            (clean_id, f"ORD-{clean_id}", uid)
+        ).fetchone()
+        if existing_refund:
+            return json.dumps({"error": "A refund has already been issued or is processing for this order."})
+
+        # Fetch from orders
+        row = conn.execute("SELECT amount FROM orders WHERE order_id = ? AND user_id = ?", (clean_id, uid)).fetchone()
+        conf = conn.execute("SELECT total as amount FROM confirmed_orders WHERE order_id = ? AND user_id = ?", (f"ORD-{clean_id}", uid)).fetchone()
+
+        if not row and not conf:
+            return json.dumps({"error": f"Order '{order_id}' not found or does not belong to you."})
+
+        # Parse order amount safely
+        order_record = row or conf
+        raw_amt = str(order_record["amount"]).replace("Rs.", "").replace(",", "").strip()
+        try:
+            order_total = float(raw_amt)
+        except ValueError:
+            order_total = 0.0
+
+        if amount > order_total:
+            return json.dumps({"error": f"Refund amount (Rs.{amount}) cannot exceed the order total (Rs.{order_total})."})
+
+        refund_id = f"REF-{uuid.uuid4().hex[:6].upper()}"
+        created_at = datetime.utcnow().isoformat()
+        db_order_id = f"ORD-{clean_id}" if conf else clean_id
+        
         conn.execute("""
             INSERT INTO refunds (refund_id, order_id, user_id, amount, reason, status, created_at)
             VALUES (?, ?, ?, ?, ?, 'Processing', ?)
-        """, (refund_id, order_id, uid, amount, reason, created_at))
+        """, (refund_id, db_order_id, uid, amount, reason, created_at))
         
-        # Also update the order status so the Order Agent reflects the change
-        clean_id = order_id.strip().lstrip("#").replace("ORD-", "")
-        conn.execute("UPDATE orders SET status = 'Refund Processing' WHERE order_id = ?", (clean_id,))
-        conn.execute("UPDATE confirmed_orders SET status = 'Refund Processing' WHERE order_id LIKE ?", (f"%{clean_id}%",))
+        if row:
+            conn.execute("UPDATE orders SET status = 'Refund Processing' WHERE order_id = ? AND user_id = ?", (clean_id, uid))
+        if conf:
+            conn.execute("UPDATE confirmed_orders SET status = 'Refund Processing' WHERE order_id = ? AND user_id = ?", (f"ORD-{clean_id}", uid))
         
         conn.commit()
 
@@ -95,7 +119,7 @@ def issue_auto_refund(order_id: str, amount: float, reason: str) -> str:
         "order_id": order_id,
         "amount": amount,
         "reason": reason,
-        "status": "Processing — will reflect in 3-5 business days",
+        "status": "Processing — will reflect in 3-5 business days"
     })
 
 

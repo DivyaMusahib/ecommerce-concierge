@@ -1,37 +1,36 @@
 """
-FAQ Retrieval Tool - Real RAG with FAISS + HuggingFace Sentence Transformers.
+FAQ Retrieval Tool - Real RAG with FAISS + Gemini Embeddings.
 
-Uses `all-MiniLM-L6-v2` (local, no API key needed) for semantic embeddings.
-Model is downloaded once and cached by sentence-transformers (~90MB).
+Uses Gemini's API for embeddings to save RAM (ideal for free hosting tiers).
 FAISS index is built from faq.md on first run and persisted to disk.
 """
 import os
 from langchain_core.tools import tool
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_core.documents import Document
 
 # Paths
 _DIR = os.path.dirname(__file__)
 _FAQ_PATH = os.path.join(_DIR, "..", "..", "data", "faq.md")
-_INDEX_PATH = os.path.join(_DIR, "..", "..", "data", "faq_faiss_index")
+_INDEX_PATH = os.path.join(_DIR, "..", "..", "data", "faq_faiss_index_gemini")
 
-# all-MiniLM-L6-v2: lightweight (90MB), 384-dim, excellent for semantic search
-_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+# Gemini embeddings
+_EMBEDDING_MODEL = "models/text-embedding-004"
 
 vector_store = None
 _embeddings = None
 
 
-def _get_embeddings() -> HuggingFaceEmbeddings:
-    """Lazy-load the HuggingFace embeddings model (cached after first load)."""
+def _get_embeddings() -> GoogleGenerativeAIEmbeddings:
+    """Lazy-load the Gemini embeddings model."""
     global _embeddings
     if _embeddings is None:
-        print(f"[FAQ RAG] Loading HuggingFace embeddings model: {_EMBEDDING_MODEL}")
-        _embeddings = HuggingFaceEmbeddings(
-            model_name=_EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
+        from app.core.config import settings
+        print(f"[FAQ RAG] Loading Gemini embeddings model: {_EMBEDDING_MODEL}")
+        _embeddings = GoogleGenerativeAIEmbeddings(
+            model=_EMBEDDING_MODEL,
+            google_api_key=settings.GEMINI_API_KEY
         )
         print("[FAQ RAG] Embeddings model ready.")
     return _embeddings
