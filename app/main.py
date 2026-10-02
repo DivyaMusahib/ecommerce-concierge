@@ -49,7 +49,10 @@ ALLOWED_ORIGINS = (
 # ── Startup / Shutdown Lifespan ───────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Ensure DB is initialized before serving any requests."""
+    """Ensure DB is initialized before serving any requests.
+    The _db_initialized guard in db.py ensures init_db() only runs once
+    even if it was already called at module import time.
+    """
     logger.info("🚀 ShopMate starting up — initializing database...")
     from app.database.db import init_db
     init_db()

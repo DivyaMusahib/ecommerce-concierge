@@ -8,7 +8,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://shopmate-ecommerc
 
 const QUICK = [
   { label: '📦 Track order #123', q: 'Where is my order #123?' },
-  { label: '📱 iPhone 17 Pro specs', q: 'Tell me about the iPhone 17 Pro' },
+  { label: '📱 iPhone 18 Pro specs', q: 'Tell me about the iPhone 18 Pro' },
   { label: '↩️ Return policy', q: 'What is your return policy?' },
   { label: '🏷️ Price trends', q: 'Is this a good time to buy a laptop?' },
   { label: '🛍️ Add to cart', q: 'Add iPhone to my cart' },
@@ -176,7 +176,10 @@ export function LiveChat({ prefill, setPrefill }) {
     try {
       const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authUser ? { Authorization: `Bearer ${localStorage.getItem('shopmate_token') || ''}` } : {}),
+        },
         body: JSON.stringify({
           message: text,
           session_id: sessionId,
@@ -239,7 +242,9 @@ export function LiveChat({ prefill, setPrefill }) {
   const fetchMyOrders = useCallback(async () => {
     if (!authUser) return;
     try {
-      const res = await fetch(`${API_BASE}/orders/confirmed/${authUser.id}`);
+      const res = await fetch(`${API_BASE}/orders/confirmed/${authUser.id}`, {
+        headers: authUser ? { Authorization: `Bearer ${localStorage.getItem('shopmate_token') || ''}` } : {},
+      });
       if (res.ok) { const d = await res.json(); setMyOrders(d.orders || []); }
     } catch { }
   }, [authUser]);
@@ -260,7 +265,10 @@ export function LiveChat({ prefill, setPrefill }) {
 
       const res = await fetch(`${API_BASE}/checkout/confirm`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authUser ? { Authorization: `Bearer ${localStorage.getItem('shopmate_token') || ''}` } : {}),
+        },
         body: JSON.stringify({
           session_id: sessionId,
           user_id: authUser?.id || 'guest',
@@ -467,8 +475,7 @@ export function LiveChat({ prefill, setPrefill }) {
                   {showLoginPrompt && !authUser && (
                     <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                       className="flex gap-3">
-                      <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] shrink-0 font-bold"
-                        style={{ background: 'linear-gradient(135deg, #60a5fa, #34d399)' }}>S</div>
+                      <img src="/logo.png" alt="ShopMate" className="w-7 h-7 rounded-full object-cover shrink-0 shadow-sm" />
                       <div className="bg-indigo-50 border border-indigo-200 rounded-2xl rounded-tl-sm px-4 py-3 max-w-xs">
                         <div className="text-[12px] font-semibold text-indigo-800 mb-2">
                           Sign in to save your preferences & order history — or just keep chatting as a guest!
@@ -493,8 +500,7 @@ export function LiveChat({ prefill, setPrefill }) {
                 <AnimatePresence>
                   {pendingConfirm && (
                     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="flex gap-3">
-                      <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] shrink-0 font-bold"
-                        style={{ background: 'linear-gradient(135deg, #8b5cf6, #f472b6)' }}>S</div>
+                      <img src="/logo.png" alt="ShopMate" className="w-7 h-7 rounded-full object-cover shrink-0 shadow-sm" />
                       <div className="bg-purple-50 border border-purple-200 rounded-2xl rounded-tl-sm px-5 py-4 max-w-sm">
                         <div className="text-[11px] font-bold mb-3 text-purple-700">Confirm your order?</div>
                         {pendingConfirm.summary && (
@@ -544,8 +550,7 @@ export function LiveChat({ prefill, setPrefill }) {
                 <AnimatePresence>
                   {agentSteps.length > 0 && (
                     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="flex gap-3">
-                      <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] shrink-0 font-bold"
-                        style={{ background: 'linear-gradient(135deg, #60a5fa, #34d399)' }}>S</div>
+                      <img src="/logo.png" alt="ShopMate" className="w-7 h-7 rounded-full object-cover shrink-0 shadow-sm" />
                       <div className="bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-700 rounded-2xl rounded-tl-sm px-5 py-4 max-w-sm">
                         <div className="text-[11px] font-bold mb-3 flex items-center gap-2" style={{ color: '#a78bfa' }}>
                           <span className="w-1.5 h-1.5 rounded-full animate-ping inline-block" style={{ background: '#a78bfa' }} />

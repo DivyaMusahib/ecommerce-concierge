@@ -79,9 +79,16 @@ def issue_auto_refund(order_id: str, amount: float, reason: str) -> str:
         if existing_refund:
             return json.dumps({"error": "A refund has already been issued or is processing for this order."})
 
-        # Fetch from orders
-        row = conn.execute("SELECT amount FROM orders WHERE order_id = ? AND user_id = ?", (clean_id, uid)).fetchone()
-        conf = conn.execute("SELECT total as amount FROM confirmed_orders WHERE order_id = ? AND user_id = ?", (f"ORD-{clean_id}", uid)).fetchone()
+        # Fetch from orders (numeric ID) and confirmed_orders (ORD- prefixed or numeric)
+        row = conn.execute(
+            "SELECT amount FROM orders WHERE order_id = ? AND user_id = ?",
+            (clean_id, uid)
+        ).fetchone()
+        conf = conn.execute(
+            "SELECT total as amount FROM confirmed_orders "
+            "WHERE (order_id = ? OR order_id = ?) AND user_id = ?",
+            (f"ORD-{clean_id}", clean_id, uid)
+        ).fetchone()
 
         if not row and not conf:
             return json.dumps({"error": f"Order '{order_id}' not found or does not belong to you."})

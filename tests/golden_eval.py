@@ -89,10 +89,10 @@ GOLDEN_DATASET = [
     {
         "id": "product-001",
         "category": "PRODUCT_INQUIRY",
-        "input": "Tell me about the iPhone 17 Pro",
+        "input": "Tell me about the iPhone 18 Pro",
         "expected_intent": "PRODUCT_INQUIRY",
         "expected_agent": "ProductAgent",
-        "must_contain": ["iphone", "17"],
+        "must_contain": ["iphone", "18"],
     },
     {
         "id": "product-002",
@@ -105,7 +105,7 @@ GOLDEN_DATASET = [
     {
         "id": "product-003",
         "category": "PRODUCT_INQUIRY",
-        "input": "Compare iPhone 17 Pro vs Samsung Galaxy S26 Ultra",
+        "input": "Compare iPhone 18 Pro vs Samsung Galaxy S26 Ultra",
         "expected_intent": "PRODUCT_INQUIRY",
         "expected_agent": "ProductAgent",
         "must_contain": ["iphone", "samsung"],
@@ -139,7 +139,7 @@ GOLDEN_DATASET = [
     {
         "id": "cart-001",
         "category": "CART_ACTION",
-        "input": "Add the iPhone 17 Pro to my cart",
+        "input": "Add the iPhone 18 Pro to my cart",
         "expected_intent": "CART_ACTION",
         "expected_agent": "CartAgent",
         "must_contain": ["iphone", "cart"],

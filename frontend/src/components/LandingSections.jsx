@@ -151,7 +151,7 @@ const AGENTS = [
     color: '#a78bfa', bgLight: 'rgba(167,139,250,0.08)',
     desc: 'LangGraph ReAct agent with tool calling. Searches product catalog for pricing, stock, ratings, specs, and offers.',
     capabilities: ['Price lookup', 'Stock status', 'Typo-Tolerant Search', 'Category filter'],
-    try: 'Tell me about the iPhone 17 Pro',
+    try: 'Tell me about the iPhone 18 Pro',
   },
   {
     emoji: '📦', name: 'Order Agent', intent: 'ORDER_TRACKING',
@@ -179,7 +179,7 @@ const AGENTS = [
     color: '#8b5cf6', bgLight: 'rgba(139,92,246,0.08)',
     desc: 'Write-action agent with idempotency. Manages cart: add/remove items, apply coupons, generate checkout summaries.',
     capabilities: ['Add to cart', 'Apply coupon', 'View cart', 'Checkout'],
-    try: 'Add iPhone 17 Pro to my cart',
+    try: 'Add iPhone 18 Pro to my cart',
   },
   {
     emoji: '🚨', name: 'Complaint Agent', intent: 'COMPLAINT',

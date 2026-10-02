@@ -20,10 +20,10 @@ class Settings:
     PROJECT_NAME: str = "E-Commerce Multi-Agent AI Assistant"
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
-    # Model identifiers for LangChain Google GenAI
-    # Google API confirmed: use "gemini-3.5-flash-lite" (not gemini-2.0-flash-lite)
-    DEFAULT_MODEL: str = "gemini-3.5-flash-lite"
-    FAST_MODEL: str = "gemini-3.5-flash-lite"  # For intent classification (cheap/fast)
+    # Model identifiers for LangChain Google GenAI.
+    # Override DEFAULT_MODEL via the GEMINI_MODEL env var if needed.
+    DEFAULT_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    FAST_MODEL: str = os.getenv("GEMINI_FAST_MODEL", "gemini-2.0-flash")  # For intent classification (cheap/fast)
 
 
 settings = Settings()

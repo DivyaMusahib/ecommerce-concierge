@@ -46,8 +46,15 @@ def _apply_migrations(c: sqlite3.Connection):
     c.commit()
 
 
+_db_initialized = False
+
+
 def init_db():
     """Create all tables and seed with demo data if empty."""
+    global _db_initialized
+    if _db_initialized:
+        return  # Already initialized in this process (e.g. module import + lifespan)
+    _db_initialized = True
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with get_conn() as c:
         # ── Products ──────────────────────────────────────────────────────────
@@ -198,10 +205,6 @@ def _seed(c: sqlite3.Connection):
              "15.6\" OLED, Intel Core Ultra 9, 32GB RAM, 1TB NVMe SSD, NVIDIA RTX 4070 GPU.",
              "Laptop", json.dumps(["10% off with HDFC cards", "Free laptop bag worth Rs.3,999"]),
              "computer,pc,dell,xps,notebook,gaming laptop"),
-            ("iphone", "Apple iPhone 17 Pro", 119900, 38, 4.8, 8921,
-             "6.3\" Super Retina XDR, A19 Pro chip, 48MP Tri-camera, 5G, Titanium build.",
-             "Smartphone", json.dumps(["Exchange bonus up to Rs.15,000", "No-cost EMI from Rs.9,992/month"]),
-             "apple,phone,smartphone,mobile,ios,iphone17,iphone 17"),
             ("samsung", "Samsung Galaxy S26 Ultra", 107999, 22, 4.6, 5632,
              "6.8\" Dynamic AMOLED 2X, 200MP camera, Snapdragon 8 Elite, 6000mAh, S Pen.",
              "Smartphone", json.dumps(["Free Galaxy Watch 7 (worth Rs.22,999)", "3-month YouTube Premium"]),
@@ -396,8 +399,8 @@ def _seed(c: sqlite3.Connection):
                  {"step": "Out for Delivery", "time": "28 Sep, 09:20 AM", "done": True},
                  {"step": "Delivered", "time": "Expected today", "done": False},
              ])),
-            ("456", "user_1", "Apple iPhone 17 Pro (256GB, Black Titanium)", "On the way", "3-4 business days",
-             "Delhivery", "DL7654321098", "28 Sep 2026", "Rs.1,19,900", json.dumps([
+            ("456", "user_1", "Apple iPhone 18 Pro (256GB, Black Titanium)", "On the way", "3-4 business days",
+             "Delhivery", "DL7654321098", "28 Sep 2026", "Rs.1,65,000", json.dumps([
                  {"step": "Order Placed", "time": "28 Sep, 03:45 PM", "done": True},
                  {"step": "Payment Confirmed", "time": "28 Sep, 03:46 PM", "done": True},
                  {"step": "Packed & Shipped", "time": "29 Sep, 10:00 AM", "done": True},
@@ -419,11 +422,35 @@ def _seed(c: sqlite3.Connection):
             VALUES (?,?,?,?,?,?,?,?,?,?)
         """, orders)
 
+    # ── Seed confirmed orders (exclusively for demo user_1's frontend UI) ──
+    if not c.execute("SELECT 1 FROM confirmed_orders LIMIT 1").fetchone():
+        confirmed_orders = [
+            (
+                "ORD-123", "demo_session", "user_1", 
+                json.dumps([{"name": "Dell XPS 15 (2026)", "price": 124990, "qty": 1}]),
+                124990, 0, 9999.20, 0, 134989.20, "", "2026-09-24T10:32:00", "Out for Delivery"
+            ),
+            (
+                "ORD-456", "demo_session", "user_1", 
+                json.dumps([{"name": "Apple iPhone 18 Pro", "price": 165000, "qty": 1}]),
+                165000, 0, 13200.00, 0, 178200.00, "", "2026-09-28T15:45:00", "On the way"
+            ),
+            (
+                "ORD-999", "demo_session", "user_1", 
+                json.dumps([{"name": "Sony WH-1000XM6", "price": 29990, "qty": 1}]),
+                29990, 0, 2399.20, 0, 32389.20, "", "2026-09-20T11:00:00", "Delivered"
+            ),
+        ]
+        c.executemany("""
+            INSERT OR IGNORE INTO confirmed_orders
+            (order_id, session_id, user_id, items_json, subtotal, discount, tax, delivery_fee, total, coupon_code, placed_at, status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """, confirmed_orders)
+
     # Seed price history
     if not c.execute("SELECT 1 FROM price_history LIMIT 1").fetchone():
         ph = [
             ("laptop", json.dumps([129990, 126990, 124990, 124990])),
-            ("iphone", json.dumps([119900, 119900, 119900, 119900])),
             ("samsung", json.dumps([110999, 108999, 107999, 107999])),
             ("macbook", json.dumps([249900, 249900, 249900, 249900])),
             ("mouse", json.dumps([10995, 9995, 9995, 9995])),

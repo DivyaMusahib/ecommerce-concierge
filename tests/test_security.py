@@ -112,7 +112,7 @@ class TestGuardrails:
         assert check_prompt_injection(attack) is True
 
     def test_normal_message_not_blocked(self):
-        normal = "What is the price of the iPhone 17?"
+        normal = "What is the price of the iPhone 18 Pro?"
         assert check_prompt_injection(normal) is False
 
     def test_pii_masking_phone(self):

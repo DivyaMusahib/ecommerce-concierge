@@ -1,10 +1,21 @@
 """
 FastAPI Routes - Chat, memory, checkout confirmation, session, and admin endpoints.
+
+Security: All endpoints that handle user-specific data validate the Bearer JWT
+when an Authorization header is present. The validated user_id from the token
+takes precedence over the body user_id — preventing user_id spoofing.
 """
-from fastapi import APIRouter, Request, HTTPException
+import re
+import time
+import json
+from fastapi import APIRouter, Request, HTTPException, Depends
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from typing import Optional
+
+from app.orchestrator.supervisor import supervisor
+from app.api.deps import get_user_from_token
 
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
@@ -34,27 +45,30 @@ class CheckoutConfirmRequest(BaseModel):
     delivery_fee: float = 0  # client-provided delivery fee (capped server-side)
 
 
-import time
-import json
-from app.orchestrator.supervisor import supervisor
-
-
 @router.post("/chat", response_model=ChatResponse)
 @limiter.limit("20/minute")
-async def chat_endpoint(request: Request, body: ChatRequest):
+async def chat_endpoint(
+    request: Request,
+    body: ChatRequest,
+    token_user_id: Optional[str] = Depends(get_user_from_token),
+):
     """Process a user message through the full multi-agent pipeline."""
+    # If a valid Bearer token was provided, its user_id overrides the body value.
+    # This prevents any client from spoofing another user's identity.
+    effective_user_id = token_user_id or body.user_id
+
     t_start = time.perf_counter()
 
     # Record pre-request memory state for change detection
     from app.memory.long_term import get_user_profile, ensure_user_exists
-    ensure_user_exists(body.user_id)
-    pre_profile = get_user_profile(body.user_id)
+    ensure_user_exists(effective_user_id)
+    pre_profile = get_user_profile(effective_user_id)
     pre_updated = pre_profile.get("updated_at", "") if pre_profile else ""
 
     response, intent_result, agents_used = await supervisor.process_request(
         body.message,
         session_id=body.session_id,
-        user_id=body.user_id,
+        user_id=effective_user_id,
     )
 
     latency_ms = round((time.perf_counter() - t_start) * 1000, 1)
@@ -65,28 +79,31 @@ async def chat_endpoint(request: Request, body: ChatRequest):
         intent_str = ", ".join(intent_result.intents)
         urgency = intent_result.urgency
 
-    # Detect confirmation_required from CartAgent checkout response
+    # Only surface the checkout UI if the current request was a CART_ACTION.
+    # Without this guard, stale draft orders from a previous turn would
+    # incorrectly trigger the confirmation modal on every subsequent message.
     confirmation_required = False
     checkout_summary = None
-    
-    from app.tools.cart_api import get_latest_checkout_summary
-    latest_summary = get_latest_checkout_summary(body.session_id)
-    if latest_summary:
-        confirmation_required = True
-        checkout_summary = latest_summary
-        
-        # Clean up any leftover raw JSON in the LLM's text response if it outputted it anyway
-        import re
-        response = re.sub(r'```(?:json)?\s*\{.*?\}\s*```', '', response, flags=re.DOTALL).strip()
-        
-        # If response is empty or just JSON, give a default prompt
-        if not response or response.startswith("{"):
-            response = "Please review your order summary and confirm below to place the order."
+    active_intents = intent_result.intents if intent_result else []
+
+    if "CART_ACTION" in active_intents:
+        from app.tools.cart_api import get_latest_checkout_summary
+        latest_summary = get_latest_checkout_summary(body.session_id)
+        if latest_summary:
+            confirmation_required = True
+            checkout_summary = latest_summary
+
+            # Clean up any raw JSON the LLM may have echoed in the text response
+            response = re.sub(r'```(?:json)?\s*\{.*?\}\s*```', '', response, flags=re.DOTALL).strip()
+
+            # If response is empty or starts with JSON, give a default prompt
+            if not response or response.startswith("{"):
+                response = "Please review your order summary and confirm below to place the order."
 
     # Detect if memory was updated during this request
     memory_updated = False
     try:
-        post_profile = get_user_profile(body.user_id)
+        post_profile = get_user_profile(effective_user_id)
         if post_profile:
             post_updated = post_profile.get("updated_at", "")
             if post_updated and post_updated != pre_updated:
@@ -109,16 +126,21 @@ async def chat_endpoint(request: Request, body: ChatRequest):
 # ── Checkout Confirmation ─────────────────────────────────────────────────────
 
 @router.post("/checkout/confirm")
-async def confirm_checkout_endpoint(body: CheckoutConfirmRequest):
+async def confirm_checkout_endpoint(
+    body: CheckoutConfirmRequest,
+    token_user_id: Optional[str] = Depends(get_user_from_token),
+):
     """
     Actually place the order after user confirms in the UI.
     Writes to confirmed_orders, clears the cart for this session.
     """
+    effective_user_id = token_user_id or body.user_id
+
     from app.tools.cart_api import confirm_checkout
     try:
         result = confirm_checkout(
             session_id=body.session_id,
-            user_id=body.user_id,
+            user_id=effective_user_id,
             draft_summary=body.draft_summary,
             delivery_fee=body.delivery_fee,
         )
@@ -132,10 +154,21 @@ async def confirm_checkout_endpoint(body: CheckoutConfirmRequest):
 # ── Orders ────────────────────────────────────────────────────────────────────
 
 @router.get("/orders/confirmed/{user_id}")
-async def get_confirmed_orders(user_id: str):
-    """Return all confirmed orders placed by the user."""
+async def get_confirmed_orders(
+    user_id: str,
+    token_user_id: Optional[str] = Depends(get_user_from_token),
+):
+    """Return all confirmed orders placed by the user.
+    Requires a valid Bearer token; the token's user_id must match the path param.
+    """
+    # If a token is present and doesn't match the path user_id, reject access.
+    if token_user_id and token_user_id != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to view another user's orders.",
+        )
+
     from app.database.db import get_conn
-    import json as _json
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM confirmed_orders WHERE user_id = ? ORDER BY placed_at DESC",
@@ -145,7 +178,7 @@ async def get_confirmed_orders(user_id: str):
     for r in rows:
         o = dict(r)
         try:
-            o["items"] = _json.loads(o["items_json"])
+            o["items"] = json.loads(o["items_json"])
         except Exception:
             o["items"] = []
         del o["items_json"]
@@ -177,8 +210,15 @@ async def clear_cart(session_id: str):
 # ── Memory Endpoints ──────────────────────────────────────────────────────────
 
 @router.get("/memory/{user_id}")
-async def get_memory(user_id: str):
+async def get_memory(
+    user_id: str,
+    token_user_id: Optional[str] = Depends(get_user_from_token),
+):
     """Return the full long-term profile and preferences for a user."""
+    # Prevent reading another user's memory when authenticated
+    if token_user_id and token_user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
     from app.memory.long_term import get_user_profile, ensure_user_exists
     ensure_user_exists(user_id)
     profile = get_user_profile(user_id)
@@ -227,4 +267,3 @@ async def update_profile(user_id: str, body: dict):
     if not success:
         raise HTTPException(status_code=400, detail=f"Field '{field}' is not allowed. Only 'name' can be updated via this endpoint.")
     return {"status": "updated", "field": field, "value": value}
-

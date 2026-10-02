@@ -90,7 +90,10 @@ def rule_based_classify(message: str) -> IntentResult | None:
 
     # ── PRODUCT_INQUIRY ─────────────────────────────────────────────────────
     product_keywords = r'\b(price|cost|how much|stock|in stock|details|specs|compare|comparison|rating|review|reviews|tell me about|show me|laptops|under|available)\b'
-    known_products = ["laptop", "iphone", "samsung", "mouse", "keyboard", "headphones", "monitor", "phone", "macbook"]
+    known_products = [
+        "laptop", "macbook", "iphone", "iphone18", "samsung", "mouse", "keyboard",
+        "headphones", "monitor", "phone", "earbuds", "tablet", "ipad", "watch", "ps5",
+    ]
     product_word_hit = re.search(product_keywords, msg)
     product_name_hit = any(p in msg for p in known_products)
 
@@ -119,11 +122,14 @@ def rule_based_classify(message: str) -> IntentResult | None:
     # Natural: "add X to my/the cart", "add X and Y to cart"
     cart_natural = re.search(r'\badd\b.{0,60}\b(cart|bag)\b', msg)
     # Conversational: "add X also", "add the braided one", standalone add with known product hint
-    cart_conversational = re.search(r'^\s*add\b.{0,80}$', msg) and re.search(
-        r'\b(also|too|as well|one|it|them|the braided|the cable|the mouse|the keyboard|the earphone|the bulb|the stand)\b', msg
+    cart_conversational = (
+        re.search(r'^\s*add\b.{0,80}$', msg) and 
+        re.search(r'\b(also|too|as well|one|it|them|the braided|the cable|the mouse|the keyboard|the earphone|the bulb|the stand)\b', msg)
     )
+    # Direct add without cart word (e.g. "add iphone 18 pro max and boat wired earphones")
+    cart_direct_add = re.search(r'^\s*add\b\s+(.+)', msg)
 
-    if cart_exact or cart_checkout_conv or cart_natural or cart_conversational:
+    if cart_exact or cart_checkout_conv or cart_natural or cart_conversational or cart_direct_add:
         intents.append("CART_ACTION")
         coupon_match = re.search(r'\b(SAVE\d+|FLAT\d+|NEWUSER|ELECTRONICS\d+)\b', msg, re.IGNORECASE)
         if coupon_match:

@@ -1,5 +1,6 @@
 import os
 import time
+import logging
 import bcrypt
 import jwt
 from fastapi import APIRouter, HTTPException
@@ -9,9 +10,18 @@ import uuid
 from datetime import datetime
 
 router = APIRouter()
+logger = logging.getLogger("shopmate.auth")
 
-# JWT secret loaded from environment with a secure fallback
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "shopmate_dev_secret_change_in_production")
+# JWT secret — MUST be set via JWT_SECRET_KEY env var in production.
+# A hardcoded fallback is intentionally kept for local dev only.
+_raw_secret = os.getenv("JWT_SECRET_KEY", "")
+if not _raw_secret:
+    _raw_secret = "shopmate_dev_secret_change_in_production"
+    logger.warning(
+        "⚠️  JWT_SECRET_KEY env var is NOT set! "
+        "Using insecure default secret — set JWT_SECRET_KEY before deploying to production."
+    )
+SECRET_KEY = _raw_secret
 ALGORITHM = "HS256"
 
 

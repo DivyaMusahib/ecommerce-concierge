@@ -169,7 +169,8 @@ def get_product_details(product_name: str) -> str:
     # Ambiguous: return list of candidates for the agent to clarify
     if isinstance(result, list):
         return json.dumps({
-            "error": "Ambiguous product name",
+            "action": "STOP_AND_ASK_USER",
+            "error": "Ambiguous product name — multiple matches found. Do NOT pick one or invent details.",
             "message": f"Multiple products match '{product_name}'. Please clarify which one you mean.",
             "matches": [{"name": r["name"], "category": r["category"], "price": f"Rs.{r['price']}"} for r in result],
         })

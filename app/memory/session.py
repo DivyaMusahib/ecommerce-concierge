@@ -36,9 +36,9 @@ class SQLiteSession:
         """Append a message to the session history, keeping only the last 6."""
         history = self.get_history(session_id)
         history.append({"role": role, "content": content})
-        # Keep only last 6 messages (3 turns) to save context window tokens
-        if len(history) > 6:
-            history = history[-6:]
+        # Keep only last 12 messages (6 turns) to preserve enough cart/checkout context
+        if len(history) > 12:
+            history = history[-12:]
 
         with get_conn() as conn:
             conn.execute("""

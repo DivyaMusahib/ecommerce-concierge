@@ -34,7 +34,7 @@ Your job:
         result = await llm.ainvoke([system, user])
         content = result.content
         if isinstance(content, list):
-            # Gemini 3.5-flash-lite returns [{'type': 'text', 'text': '...'}]
+            # Gemini flash models may return list[{'type': 'text', 'text': '...'}]
             return "".join(
                 p.get("text") or p.get("content") or "" if isinstance(p, dict) else str(p)
                 for p in content

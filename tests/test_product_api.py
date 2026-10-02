@@ -51,7 +51,7 @@ class TestFuzzyMatch:
                 assert "name" in item
 
     def test_iphone_found(self):
-        result = _fuzzy_match("iphone 17")
+        result = _fuzzy_match("iphone 18")
         assert result is not None
         if isinstance(result, dict):
             assert "iphone" in result["product_key"]
@@ -94,7 +94,7 @@ class TestFormatProduct:
 
 class TestGetProductDetails:
     def test_found_product_returns_json(self):
-        output = get_product_details.invoke({"product_name": "iPhone 17 Pro"})
+        output = get_product_details.invoke({"product_name": "iPhone 18 Pro"})
         data = json.loads(output)
         assert "name" in data or "error" in data
 

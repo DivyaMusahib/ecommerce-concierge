@@ -26,7 +26,7 @@ from app.database.db import get_conn
 _current_session: ContextVar[str] = ContextVar("current_session", default="default")
 _current_user: ContextVar[str] = ContextVar("current_cart_user", default="default")
 
-MAX_DELIVERY_FEE = 500  # Cap client-supplied delivery fee to prevent inflation
+MAX_DELIVERY_FEE = 100  # Cap client-supplied delivery fee; frontend max is also ₹100
 
 
 def set_cart_session(session_id: str, user_id: str = "") -> None:
@@ -236,14 +236,19 @@ def apply_coupon_to_cart(coupon_code: str) -> str:
 
     subtotal = sum(int(item["price"]) * int(item["quantity"]) for item in items)
 
-    # NEWUSER check
+    # NEWUSER check — must have no prior orders in EITHER table
     if code == "NEWUSER":
         with get_conn() as conn:
             user_id = _uid()
-            prev_orders = conn.execute(
+            # Check confirmed_orders (checkout flow)
+            prev_confirmed = conn.execute(
                 "SELECT 1 FROM confirmed_orders WHERE user_id = ? LIMIT 1", (user_id,)
             ).fetchone()
-            if prev_orders:
+            # Also check the orders table (demo/tracking orders)
+            prev_orders = conn.execute(
+                "SELECT 1 FROM orders WHERE user_id = ? LIMIT 1", (user_id,)
+            ).fetchone()
+            if prev_confirmed or prev_orders:
                 return json.dumps({"error": "Coupon 'NEWUSER' is only valid for first-time customers."})
 
     if subtotal < coupon["min_order"]:
@@ -473,7 +478,13 @@ def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, deliver
             conn.commit()
         except Exception as e:
             if "UNIQUE constraint failed" in str(e):
-                pass  # Already placed, return idempotently
+                # Order already placed (idempotent double-submit) — return a clear signal
+                # rather than silently returning freshly computed totals for a no-op write.
+                return {
+                    "order_id": order_id,
+                    "status": "already_confirmed",
+                    "message": "This order has already been placed.",
+                }
             else:
                 raise
 
