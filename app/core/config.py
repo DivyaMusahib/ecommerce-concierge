@@ -22,8 +22,8 @@ class Settings:
 
     # Model identifiers for LangChain Google GenAI.
     # Override DEFAULT_MODEL via the GEMINI_MODEL env var if needed.
-    DEFAULT_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-    FAST_MODEL: str = os.getenv("GEMINI_FAST_MODEL", "gemini-2.0-flash")  # For intent classification (cheap/fast)
+    DEFAULT_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    FAST_MODEL: str = os.getenv("GEMINI_FAST_MODEL", "gemini-3.5-flash-lite")  # For intent classification (cheap/fast)
 
 
 settings = Settings()
