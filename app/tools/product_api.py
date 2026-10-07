@@ -49,7 +49,7 @@ def _fuzzy_match(query: str) -> dict | list | None:
     with get_conn() as conn:
         rows = conn.execute("""
             SELECT p.*,
-                   GROUP_CONCAT(ps.synonym, ',') AS synonyms
+                   STRING_AGG(ps.synonym, ',') AS synonyms
             FROM products p
             LEFT JOIN product_synonyms ps ON ps.product_key = p.product_key
             GROUP BY p.product_key
@@ -244,7 +244,7 @@ def search_products(category: str = "", max_price: int = 0, keyword: str = "") -
 
         base_rows = conn.execute(f"""
             SELECT DISTINCT p.*,
-                   GROUP_CONCAT(ps.synonym, ',') AS synonyms
+                   STRING_AGG(ps.synonym, ',') AS synonyms
             FROM products p
             LEFT JOIN product_synonyms ps ON ps.product_key = p.product_key
             {where_clause}

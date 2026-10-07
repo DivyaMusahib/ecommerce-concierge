@@ -29,7 +29,7 @@ def get_price_history(product_name: str) -> str:
             # Fuzzy: check if query matches any product name or synonym
             products = conn.execute("""
                 SELECT DISTINCT p.product_key, p.name, p.price,
-                       GROUP_CONCAT(ps.synonym, ',') AS synonyms
+                       STRING_AGG(ps.synonym, ',') AS synonyms
                 FROM products p
                 LEFT JOIN product_synonyms ps ON ps.product_key = p.product_key
                 GROUP BY p.product_key
