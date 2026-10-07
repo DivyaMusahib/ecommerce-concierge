@@ -163,23 +163,23 @@ async def get_confirmed_orders(
             detail="You do not have permission to view another user's orders.",
         )
 
-    from sqlalchemy import text
-
-    from app.database.engine import async_session
-    async with async_session() as session:
-        rows = (await session.execute(text("""
+    from app.database.engine import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
             SELECT o.order_id, o.status, o.subtotal, o.discount, o.tax,
                    o.delivery_fee, o.total, o.coupon_code, o.placed_at
             FROM orders o
-            WHERE o.user_id = :uid
+            WHERE o.user_id = $1
             ORDER BY o.placed_at DESC
-        """), {"uid": user_id})).mappings().fetchall()
+        """, user_id)
 
         orders = []
         for r in rows:
-            items_rows = (await session.execute(text("""
-                SELECT name, price, quantity FROM order_items WHERE order_id = :oid
-            """), {"oid": r["order_id"]})).fetchall()
+            items_rows = await conn.fetch(
+                "SELECT name, price, quantity FROM order_items WHERE order_id = $1",
+                r["order_id"],
+            )
             orders.append({
                 "order_id": r["order_id"],
                 "status": r["status"],
@@ -190,7 +190,7 @@ async def get_confirmed_orders(
                 "total": r["total"],
                 "coupon_code": r["coupon_code"],
                 "placed_at": str(r["placed_at"]),
-                "items": [{"name": i[0], "price": i[1], "qty": i[2]} for i in items_rows],
+                "items": [{"name": i["name"], "price": i["price"], "qty": i["quantity"]} for i in items_rows],
             })
     return {"orders": orders}
 

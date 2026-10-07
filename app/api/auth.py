@@ -64,29 +64,27 @@ def create_access_token(data: dict) -> str:
 @router.post("/auth/register")
 @limiter.limit("3/minute")
 async def register(request: Request, req: RegisterRequest):
-    from sqlalchemy import text
+    from app.database.engine import get_pool
+    pool = await get_pool()
 
-    from app.database.engine import async_session
-
-    async with async_session() as session:
-        existing = (await session.execute(
-            text("SELECT 1 FROM users WHERE email = :email"),
-            {"email": req.email}
-        )).fetchone()
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            "SELECT 1 FROM users WHERE email = $1", req.email
+        )
         if existing:
             raise HTTPException(status_code=400, detail="Email already registered")
 
         user_id = f"user_{uuid.uuid4().hex[:8]}"
         hashed_pw = get_password_hash(req.password)
-        await session.execute(text("""
+        await conn.execute("""
             INSERT INTO users (user_id, email, password_hash, name, shipping_address)
-            VALUES (:uid, :email, :pw, :name, '')
-        """), {"uid": user_id, "email": req.email, "pw": hashed_pw, "name": req.name})
-        await session.commit()
+            VALUES ($1, $2, $3, $4, '')
+        """, user_id, req.email, hashed_pw, req.name)
 
-    # Initialize long-term memory profile (await directly — we're already async)
-    from app.memory.long_term import _pg_ensure_user
-    await _pg_ensure_user(user_id)
+    # Ensure long-term memory profile exists (user already inserted above,
+    # _pg_ensure_user is a no-op via ON CONFLICT DO NOTHING)
+    from app.memory.long_term import async_ensure_user_exists
+    await async_ensure_user_exists(user_id)
 
     token = create_access_token({"sub": user_id})
     return {"access_token": token, "user_id": user_id, "name": req.name}
@@ -95,15 +93,14 @@ async def register(request: Request, req: RegisterRequest):
 @router.post("/auth/login")
 @limiter.limit("5/minute")
 async def login(request: Request, req: LoginRequest):
-    from sqlalchemy import text
+    from app.database.engine import get_pool
+    pool = await get_pool()
 
-    from app.database.engine import async_session
-
-    async with async_session() as session:
-        row = (await session.execute(
-            text("SELECT user_id, name, password_hash FROM users WHERE email = :email"),
-            {"email": req.email}
-        )).mappings().fetchone()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT user_id, name, password_hash FROM users WHERE email = $1",
+            req.email,
+        )
 
     if not row:
         raise HTTPException(status_code=401, detail="Invalid credentials")

@@ -1,23 +1,22 @@
 """
 ShopMate database — PostgreSQL schema, initialisation, and seed data.
 
-Public API:
+Public async API (called from lifespan / async routes):
   init_schema()  — create all tables (idempotent, called at startup)
   seed_data()    — insert demo data if tables are empty
+
+Sync helper (for agent tools running in LangChain's ThreadPoolExecutor):
+  get_conn()     — psycopg2 context manager
 """
 import logging
-from collections.abc import AsyncGenerator
 from contextlib import contextmanager
-
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.database.engine import async_session, engine
 
 logger = logging.getLogger("shopmate.db")
 
 
-_SCHEMA_SQL = """
+# ── Schema DDL ────────────────────────────────────────────────────────────────
+
+_SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS users (
     user_id          TEXT PRIMARY KEY,
     email            TEXT UNIQUE NOT NULL,
@@ -191,33 +190,112 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(sess
 """
 
 
+# ── Async init / seed ─────────────────────────────────────────────────────────
+
 async def init_schema() -> None:
-    """Create all tables. Safe to call on every startup."""
-    async with engine.begin() as conn:
+    """Create all tables. Safe to call on every startup (all DDL is idempotent)."""
+    from app.database.engine import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Execute each statement separately so pgBouncer transaction mode is happy
         for stmt in _SCHEMA_SQL.split(";"):
             stmt = stmt.strip()
             if stmt:
-                await conn.execute(text(stmt))
+                await conn.execute(stmt)
     logger.info("Database schema ready.")
 
 
-async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
-    """Yield a scoped async database session."""
-    async with async_session() as session:
-        yield session
+async def seed_data() -> None:
+    """Populate demo data. Only inserts when the relevant table is empty."""
+    import bcrypt
+
+    from app.database.engine import get_pool
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        # ── Products ──────────────────────────────────────────────────────────
+        count = await conn.fetchval("SELECT COUNT(*) FROM products")
+        if count == 0:
+            logger.info("Seeding products...")
+            for p in _PRODUCTS:
+                key, name, price, stock, rating, reviews, desc, cat, offers, synonyms = p
+                await conn.execute("""
+                    INSERT INTO products (product_key, name, price, stock, rating, reviews, description, category)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ON CONFLICT (product_key) DO NOTHING
+                """, key, name, price, stock, rating, reviews, desc, cat)
+                for offer_text in offers:
+                    await conn.execute(
+                        "INSERT INTO product_offers (product_key, offer_text) VALUES ($1, $2)",
+                        key, offer_text,
+                    )
+                for syn in synonyms:
+                    await conn.execute(
+                        "INSERT INTO product_synonyms (product_key, synonym) VALUES ($1, $2)",
+                        key, syn,
+                    )
+
+        # ── Price history ─────────────────────────────────────────────────────
+        if await conn.fetchval("SELECT COUNT(*) FROM price_history") == 0:
+            logger.info("Seeding price history...")
+            for product_key, prices in _PRICE_HISTORY.items():
+                for i, price in enumerate(prices):
+                    await conn.execute("""
+                        INSERT INTO price_history (product_key, price, recorded_at)
+                        VALUES ($1, $2, NOW() - ($3 * INTERVAL '1 week'))
+                    """, product_key, price, len(prices) - 1 - i)
+
+        # ── Coupons ───────────────────────────────────────────────────────────
+        if await conn.fetchval("SELECT COUNT(*) FROM coupons") == 0:
+            logger.info("Seeding coupons...")
+            for code, ctype, value, min_order, max_discount, desc in _COUPONS:
+                await conn.execute("""
+                    INSERT INTO coupons (code, type, value, min_order, max_discount, description)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (code) DO NOTHING
+                """, code, ctype, value, min_order, max_discount, desc)
+
+        # ── Demo user and orders ──────────────────────────────────────────────
+        if await conn.fetchval("SELECT COUNT(*) FROM users") == 0:
+            logger.info("Seeding demo user and orders...")
+            demo_hash = bcrypt.hashpw(b"demo", bcrypt.gensalt()).decode()
+            await conn.execute("""
+                INSERT INTO users (user_id, email, password_hash, name, shipping_address)
+                VALUES ('user_1', 'demo@gmail.com', $1, 'Demo User', '')
+                ON CONFLICT (user_id) DO NOTHING
+            """, demo_hash)
+            await conn.execute("""
+                INSERT INTO user_preferences (user_id, pref_key, pref_value, source)
+                VALUES ('user_1', 'preferred_budget', 'flexible', 'agent'),
+                       ('user_1', 'interests', 'electronics, gadgets', 'agent')
+                ON CONFLICT (user_id, pref_key) DO NOTHING
+            """)
+
+            for oid, uid, status, sub, disc, tax, fee, total, carrier, tracking in _DEMO_ORDERS:
+                await conn.execute("""
+                    INSERT INTO orders (order_id, user_id, status, subtotal, discount, tax,
+                                        delivery_fee, total, carrier, tracking_num)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    ON CONFLICT (order_id) DO NOTHING
+                """, oid, uid, status, sub, disc, tax, fee, total, carrier, tracking)
+                for pkey, name, price, qty in _ORDER_ITEMS_MAP[oid]:
+                    await conn.execute("""
+                        INSERT INTO order_items (order_id, product_key, name, price, quantity)
+                        VALUES ($1, $2, $3, $4, $5)
+                    """, oid, pkey, name, price, qty)
+                for step, occurred_at, completed in _ORDER_TIMELINES[oid]:
+                    await conn.execute("""
+                        INSERT INTO order_timeline (order_id, step, occurred_at, completed)
+                        VALUES ($1, $2, $3, $4)
+                    """, oid, step, occurred_at, completed)
+
+    logger.info("Seed complete.")
 
 
-# ---------------------------------------------------------------------------
-# Synchronous connection helper for agent tools
-#
-# Agent tools (cart_api, product_api, etc.) are synchronous functions that
-# run inside ThreadPoolExecutor via LangChain. They cannot use async
-# SQLAlchemy directly. get_conn() provides a psycopg2 connection whose rows
-# behave like dicts (psycopg2.extras.RealDictCursor), so the existing
-# row["key"] syntax works unchanged.
-# ---------------------------------------------------------------------------
-
-
+# ── Sync helper for agent tools ───────────────────────────────────────────────
+# Agent tools (cart_api, product_api, etc.) are synchronous functions that run
+# inside LangChain's ThreadPoolExecutor. get_conn() provides a psycopg2
+# connection whose rows behave like dicts (RealDictCursor).
 
 @contextmanager
 def get_conn():
@@ -233,10 +311,7 @@ def get_conn():
 
     from app.database.engine import DATABASE_URL
 
-    # Convert SQLAlchemy async URL back to standard psycopg2 DSN
-    dsn = (DATABASE_URL
-           .replace("postgresql+asyncpg://", "postgresql://", 1)
-           .replace("postgres+asyncpg://",   "postgresql://", 1))
+    dsn = DATABASE_URL  # already a plain postgresql:// URL
 
     conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
     conn.autocommit = False
@@ -254,11 +329,6 @@ class _PsycoConnWrapper:
     """
     Thin wrapper around a psycopg2 connection that adapts the execute() API
     to match what the agent tools expect (sqlite3-style interface).
-
-    Differences handled:
-      - sqlite3 uses '?' placeholders; psycopg2 uses '%s'. We convert on the fly.
-      - sqlite3.Cursor.fetchone() / fetchall() return sqlite3.Row (dict-like);
-        psycopg2 with RealDictCursor returns dicts natively.
     """
 
     def __init__(self, conn):
@@ -297,6 +367,7 @@ class _PsycoCursorWrapper:
         return self._cur.fetchone().get("id") if self._cur.description else None
 
 
+# ── Seed data ─────────────────────────────────────────────────────────────────
 
 _PRODUCTS = [
     ("laptop", "Dell XPS 15 (2026)", 124990, 14, 4.7, 2341,
@@ -388,152 +459,69 @@ _PRODUCTS = [
 ]
 
 _PRICE_HISTORY = {
-    "laptop":        [129990, 126990, 124990, 124990],
-    "samsung":       [110999, 108999, 107999, 107999],
-    "macbook":       [249900, 249900, 249900, 249900],
-    "mouse":         [10995, 9995, 9995, 9995],
-    "keyboard":      [11990, 11490, 11490, 11490],
-    "headphones":    [31990, 30990, 29990, 29990],
-    "monitor":       [56990, 55990, 54990, 54990],
-    "ipad":          [129900, 129900, 129900, 129900],
-    "ps5":           [59990, 59990, 54990, 54990],
-    "watch":         [89900, 89900, 89900, 89900],
-    "tv":            [319990, 319990, 299990, 299990],
-    "kindle":        [14999, 14999, 13999, 14999],
-    "iphone18pro":   [165000, 165000, 165000, 165000],
-    "iphone18promax":[180000, 180000, 180000, 180000],
-    "earbuds_pro":   [24900, 24900, 24900, 24900],
-    "headphones_bose":[35900, 35900, 35900, 35900],
-    "laptop_mac_air":[114900, 114900, 114900, 114900],
-    "camera_sony":   [349990, 349990, 349990, 349990],
-    "drone":         [89990, 89990, 89990, 89990],
-    "vr_headset":    [49999, 49999, 49999, 49999],
-    "ssd_1tb":       [11999, 11999, 11999, 11999],
-    "powerbank":     [3999, 3999, 3999, 3999],
+    "laptop":         [129990, 126990, 124990, 124990],
+    "samsung":        [110999, 108999, 107999, 107999],
+    "macbook":        [249900, 249900, 249900, 249900],
+    "mouse":          [10995,   9995,   9995,   9995],
+    "keyboard":       [11990,  11490,  11490,  11490],
+    "headphones":     [31990,  30990,  29990,  29990],
+    "monitor":        [56990,  55990,  54990,  54990],
+    "ipad":           [129900, 129900, 129900, 129900],
+    "ps5":            [59990,  59990,  54990,  54990],
+    "watch":          [89900,  89900,  89900,  89900],
+    "tv":             [319990, 319990, 299990, 299990],
+    "kindle":         [14999,  14999,  13999,  14999],
+    "iphone18pro":    [165000, 165000, 165000, 165000],
+    "iphone18promax": [180000, 180000, 180000, 180000],
+    "earbuds_pro":    [24900,  24900,  24900,  24900],
+    "headphones_bose":[35900,  35900,  35900,  35900],
+    "laptop_mac_air": [114900, 114900, 114900, 114900],
+    "camera_sony":    [349990, 349990, 349990, 349990],
+    "drone":          [89990,  89990,  89990,  89990],
+    "vr_headset":     [49999,  49999,  49999,  49999],
+    "ssd_1tb":        [11999,  11999,  11999,  11999],
+    "powerbank":      [3999,   3999,   3999,   3999],
 }
 
 _COUPONS = [
-    ("SAVE10",        "percent", 10.0, 5000.0,  0.0,    "10% off orders above Rs.5,000"),
-    ("FLAT500",       "flat",    500.0, 5000.0,  500.0,  "Rs.500 off on orders above Rs.5,000"),
-    ("NEWUSER",       "percent", 15.0,  0.0,     2000.0, "15% off for new users, max Rs.2,000"),
-    ("ELECTRONICS20", "percent", 20.0,  10000.0, 3000.0, "20% off electronics, max Rs.3,000"),
+    ("SAVE10",        "percent", 10.0,  5000.0,    0.0, "10% off orders above Rs.5,000"),
+    ("FLAT500",       "flat",   500.0,  5000.0,  500.0, "Rs.500 off on orders above Rs.5,000"),
+    ("NEWUSER",       "percent", 15.0,     0.0, 2000.0, "15% off for new users, max Rs.2,000"),
+    ("ELECTRONICS20", "percent", 20.0, 10000.0, 3000.0, "20% off electronics, max Rs.3,000"),
 ]
 
+_DEMO_ORDERS = [
+    ("123", "user_1", "Out for Delivery", 124990, 0, 9999.20,  0, 134989.20, "BlueDart Express", "BD9283746501"),
+    ("456", "user_1", "On the way",       165000, 0, 13200.00, 0, 178200.00, "Delhivery",        "DL7654321098"),
+    ("999", "user_1", "Delivered",         29990, 0, 2399.20,  0, 32389.20,  "DTDC",             "DTDC00192837465"),
+]
 
-async def seed_data() -> None:
-    """Populate demo data. Only inserts when the relevant table is empty."""
-    import bcrypt
+_ORDER_ITEMS_MAP = {
+    "123": [("laptop",      "Dell XPS 15 (2026)",          124990, 1)],
+    "456": [("iphone18pro", "Apple iPhone 18 Pro (256GB)",  165000, 1)],
+    "999": [("headphones",  "Sony WH-1000XM6",               29990, 1)],
+}
 
-    async with async_session() as session:
-        # Products
-        count = (await session.execute(text("SELECT COUNT(*) FROM products"))).scalar()
-        if count == 0:
-            logger.info("Seeding products...")
-            for p in _PRODUCTS:
-                key, name, price, stock, rating, reviews, desc, cat, offers, synonyms = p
-                await session.execute(text("""
-                    INSERT INTO products (product_key, name, price, stock, rating, reviews, description, category)
-                    VALUES (:k, :n, :pr, :st, :r, :rv, :d, :c)
-                    ON CONFLICT (product_key) DO NOTHING
-                """), {"k": key, "n": name, "pr": price, "st": stock, "r": rating,
-                       "rv": reviews, "d": desc, "c": cat})
-                for offer_text in offers:
-                    await session.execute(text("""
-                        INSERT INTO product_offers (product_key, offer_text) VALUES (:k, :o)
-                    """), {"k": key, "o": offer_text})
-                for syn in synonyms:
-                    await session.execute(text("""
-                        INSERT INTO product_synonyms (product_key, synonym) VALUES (:k, :s)
-                    """), {"k": key, "s": syn})
-
-        # Price history
-        if (await session.execute(text("SELECT COUNT(*) FROM price_history"))).scalar() == 0:
-            logger.info("Seeding price history...")
-            for product_key, prices in _PRICE_HISTORY.items():
-                for i, price in enumerate(prices):
-                    await session.execute(text("""
-                        INSERT INTO price_history (product_key, price, recorded_at)
-                        VALUES (:k, :p, NOW() - INTERVAL '1 week' * :weeks)
-                    """), {"k": product_key, "p": price, "weeks": len(prices) - 1 - i})
-
-        # Coupons
-        if (await session.execute(text("SELECT COUNT(*) FROM coupons"))).scalar() == 0:
-            logger.info("Seeding coupons...")
-            for code, ctype, value, min_order, max_discount, desc in _COUPONS:
-                await session.execute(text("""
-                    INSERT INTO coupons (code, type, value, min_order, max_discount, description)
-                    VALUES (:code, :t, :v, :mo, :md, :d)
-                    ON CONFLICT (code) DO NOTHING
-                """), {"code": code, "t": ctype, "v": value, "mo": min_order,
-                       "md": max_discount, "d": desc})
-
-        # Demo user and orders
-        if (await session.execute(text("SELECT COUNT(*) FROM users"))).scalar() == 0:
-            logger.info("Seeding demo user and orders...")
-            demo_hash = bcrypt.hashpw(b"demo", bcrypt.gensalt()).decode()
-            await session.execute(text("""
-                INSERT INTO users (user_id, email, password_hash, name, shipping_address)
-                VALUES ('user_1', 'demo@gmail.com', :h, 'Demo User', '')
-                ON CONFLICT (user_id) DO NOTHING
-            """), {"h": demo_hash})
-            await session.execute(text("""
-                INSERT INTO user_preferences (user_id, pref_key, pref_value, source)
-                VALUES ('user_1', 'preferred_budget', 'flexible', 'agent'),
-                       ('user_1', 'interests', 'electronics, gadgets', 'agent')
-                ON CONFLICT (user_id, pref_key) DO NOTHING
-            """))
-
-            demo_orders = [
-                ("123", "user_1", "Out for Delivery", 124990, 0, 9999.20, 0, 134989.20, "BlueDart Express", "BD9283746501"),
-                ("456", "user_1", "On the way",       165000, 0, 13200.00, 0, 178200.00, "Delhivery",        "DL7654321098"),
-                ("999", "user_1", "Delivered",         29990, 0, 2399.20,  0, 32389.20,  "DTDC",             "DTDC00192837465"),
-            ]
-            order_items_map = {
-                "123": [("laptop",     "Dell XPS 15 (2026)",         124990, 1)],
-                "456": [("iphone18pro","Apple iPhone 18 Pro (256GB)", 165000, 1)],
-                "999": [("headphones", "Sony WH-1000XM6",              29990, 1)],
-            }
-            order_timelines = {
-                "123": [
-                    ("Order Placed",      "24 Sep, 10:32 AM", True),
-                    ("Payment Confirmed", "24 Sep, 10:33 AM", True),
-                    ("Packed & Shipped",  "25 Sep, 08:15 PM", True),
-                    ("Out for Delivery",  "28 Sep, 09:20 AM", True),
-                    ("Delivered",         "Expected today",   False),
-                ],
-                "456": [
-                    ("Order Placed",      "28 Sep, 03:45 PM", True),
-                    ("Payment Confirmed", "28 Sep, 03:46 PM", True),
-                    ("Packed & Shipped",  "29 Sep, 10:00 AM", True),
-                    ("Out for Delivery",  "Pending",          False),
-                    ("Delivered",         "Estimated 2 Oct",  False),
-                ],
-                "999": [
-                    ("Order Placed",      "20 Sep, 11:00 AM", True),
-                    ("Payment Confirmed", "20 Sep, 11:01 AM", True),
-                    ("Packed & Shipped",  "22 Sep, 02:00 PM", True),
-                    ("Out for Delivery",  "23 Sep, 08:00 AM", True),
-                    ("Delivered",         "23 Sep, 01:30 PM", True),
-                ],
-            }
-            for oid, uid, status, sub, disc, tax, fee, total, carrier, tracking in demo_orders:
-                await session.execute(text("""
-                    INSERT INTO orders (order_id, user_id, status, subtotal, discount, tax,
-                                        delivery_fee, total, carrier, tracking_num)
-                    VALUES (:oid, :uid, :s, :sub, :d, :t, :f, :tot, :c, :tr)
-                    ON CONFLICT (order_id) DO NOTHING
-                """), {"oid": oid, "uid": uid, "s": status, "sub": sub, "d": disc,
-                       "t": tax, "f": fee, "tot": total, "c": carrier, "tr": tracking})
-                for pkey, name, price, qty in order_items_map[oid]:
-                    await session.execute(text("""
-                        INSERT INTO order_items (order_id, product_key, name, price, quantity)
-                        VALUES (:oid, :pk, :n, :p, :q)
-                    """), {"oid": oid, "pk": pkey, "n": name, "p": price, "q": qty})
-                for step, occurred_at, completed in order_timelines[oid]:
-                    await session.execute(text("""
-                        INSERT INTO order_timeline (order_id, step, occurred_at, completed)
-                        VALUES (:oid, :s, :o, :c)
-                    """), {"oid": oid, "s": step, "o": occurred_at, "c": completed})
-
-        await session.commit()
-    logger.info("Seed complete.")
+_ORDER_TIMELINES = {
+    "123": [
+        ("Order Placed",      "24 Sep, 10:32 AM", True),
+        ("Payment Confirmed", "24 Sep, 10:33 AM", True),
+        ("Packed & Shipped",  "25 Sep, 08:15 PM", True),
+        ("Out for Delivery",  "28 Sep, 09:20 AM", True),
+        ("Delivered",         "Expected today",   False),
+    ],
+    "456": [
+        ("Order Placed",      "28 Sep, 03:45 PM", True),
+        ("Payment Confirmed", "28 Sep, 03:46 PM", True),
+        ("Packed & Shipped",  "29 Sep, 10:00 AM", True),
+        ("Out for Delivery",  "Pending",           False),
+        ("Delivered",         "Estimated 2 Oct",   False),
+    ],
+    "999": [
+        ("Order Placed",      "20 Sep, 11:00 AM", True),
+        ("Payment Confirmed", "20 Sep, 11:01 AM", True),
+        ("Packed & Shipped",  "22 Sep, 02:00 PM", True),
+        ("Out for Delivery",  "23 Sep, 08:00 AM", True),
+        ("Delivered",         "23 Sep, 01:30 PM", True),
+    ],
+}

@@ -1,9 +1,11 @@
 """
 Long-term user memory — PostgreSQL-backed user profiles and preferences.
 
-Stores per-user preferences as individual rows so concurrent agent writes
-never clobber each other. All operations are synchronous wrappers around
-async PostgreSQL queries.
+Uses raw asyncpg (no SQLAlchemy) so that statement_cache_size=0 is respected
+and no prepared statements are sent to pgBouncer (transaction mode).
+
+Async-native functions (async_*) should be used from async FastAPI routes.
+Sync wrappers are kept for LangChain tool callbacks that run synchronously.
 """
 import asyncio
 import concurrent.futures
@@ -13,7 +15,7 @@ logger = logging.getLogger("shopmate.long_term")
 
 
 def _run(coro):
-    """Run an async coroutine from synchronous context."""
+    """Run an async coroutine from a synchronous context."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -25,134 +27,130 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-async def _pg_get_profile(user_id: str) -> dict | None:
-    from sqlalchemy import text
+# ── Private async implementations ─────────────────────────────────────────────
 
-    from app.database.engine import async_session
-    async with async_session() as session:
-        row = (await session.execute(
-            text("SELECT * FROM users WHERE user_id = :uid"), {"uid": user_id}
-        )).mappings().fetchone()
+async def _pg_get_profile(user_id: str) -> dict | None:
+    from app.database.engine import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM users WHERE user_id = $1", user_id
+        )
         if not row:
             return None
-        prefs_rows = (await session.execute(
-            text("SELECT pref_key, pref_value FROM user_preferences WHERE user_id = :uid"),
-            {"uid": user_id}
-        )).fetchall()
+        prefs_rows = await conn.fetch(
+            "SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1",
+            user_id,
+        )
     return {
         "user_id": user_id,
         "name": row["name"],
-        "shipping_address": row.get("shipping_address") or "",
-        "preferences": {r[0]: r[1] for r in prefs_rows},
-        "updated_at": str(row.get("updated_at", "")),
+        "shipping_address": row["shipping_address"] or "",
+        "preferences": {r["pref_key"]: r["pref_value"] for r in prefs_rows},
+        "updated_at": str(row["updated_at"]) if row["updated_at"] else "",
     }
 
 
-async def _pg_ensure_user(user_id: str):
-    from sqlalchemy import text
-
-    from app.database.engine import async_session
-    async with async_session() as session:
-        await session.execute(text("""
+async def _pg_ensure_user(user_id: str) -> None:
+    from app.database.engine import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
             INSERT INTO users (user_id, email, password_hash, name)
-            VALUES (:uid, :email, '', :uid)
+            VALUES ($1, $2, '', $1)
             ON CONFLICT (user_id) DO NOTHING
-        """), {"uid": user_id, "email": f"{user_id}@guest.local"})
-        await session.commit()
+        """, user_id, f"{user_id}@guest.local")
 
 
 async def _pg_save_pref(user_id: str, key: str, value: str) -> dict:
-    from sqlalchemy import text
-
-    from app.database.engine import async_session
     await _pg_ensure_user(user_id)
-    async with async_session() as session:
-        await session.execute(text("""
+    from app.database.engine import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
             INSERT INTO user_preferences (user_id, pref_key, pref_value, source, updated_at)
-            VALUES (:uid, :k, :v, 'agent', NOW())
+            VALUES ($1, $2, $3, 'agent', NOW())
             ON CONFLICT (user_id, pref_key) DO UPDATE
             SET pref_value = EXCLUDED.pref_value, updated_at = NOW()
-        """), {"uid": user_id, "k": key, "v": value})
-        await session.commit()
-        rows = (await session.execute(
-            text("SELECT pref_key, pref_value FROM user_preferences WHERE user_id = :uid"),
-            {"uid": user_id}
-        )).fetchall()
-    return {r[0]: r[1] for r in rows}
+        """, user_id, key, value)
+        rows = await conn.fetch(
+            "SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1",
+            user_id,
+        )
+    return {r["pref_key"]: r["pref_value"] for r in rows}
 
 
 async def _pg_delete_pref(user_id: str, key: str) -> dict:
-    from sqlalchemy import text
-
-    from app.database.engine import async_session
-    async with async_session() as session:
-        await session.execute(text("""
-            DELETE FROM user_preferences WHERE user_id = :uid AND pref_key = :k
-        """), {"uid": user_id, "k": key})
-        await session.commit()
-        rows = (await session.execute(
-            text("SELECT pref_key, pref_value FROM user_preferences WHERE user_id = :uid"),
-            {"uid": user_id}
-        )).fetchall()
-    return {r[0]: r[1] for r in rows}
-
-
-async def _pg_update_field(user_id: str, field: str, value: str) -> bool:
-    from sqlalchemy import text
-
-    from app.database.engine import async_session
-    async with async_session() as session:
-        await session.execute(
-            text(f"UPDATE users SET {field} = :v, updated_at = NOW() WHERE user_id = :uid"),
-            {"v": value, "uid": user_id}
+    from app.database.engine import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM user_preferences WHERE user_id = $1 AND pref_key = $2",
+            user_id, key,
         )
-        await session.commit()
+        rows = await conn.fetch(
+            "SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1",
+            user_id,
+        )
+    return {r["pref_key"]: r["pref_value"] for r in rows}
+
+
+async def _pg_clear_prefs(user_id: str) -> bool:
+    from app.database.engine import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM user_preferences WHERE user_id = $1", user_id
+        )
     return True
 
 
-# Public API — async-native (use these from async routes/nodes)
+async def _pg_update_field(user_id: str, field: str, value: str) -> bool:
+    from app.database.engine import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE users SET {field} = $1, updated_at = NOW() WHERE user_id = $2",
+            value, user_id,
+        )
+    return True
+
+
+# ── Public async API (use from async routes / LangGraph nodes) ────────────────
 
 async def async_get_user_profile(user_id: str) -> dict | None:
-    """Async version — await directly from async contexts."""
+    """Async — await from async contexts."""
     return await _pg_get_profile(user_id)
 
 
 async def async_ensure_user_exists(user_id: str) -> None:
-    """Async version — await directly from async contexts."""
+    """Async — await from async contexts."""
     await _pg_ensure_user(user_id)
 
 
 async def async_save_preference(user_id: str, key: str, value: str) -> dict:
-    """Async version — await directly from async contexts."""
+    """Async — await from async contexts."""
     return await _pg_save_pref(user_id, key, value)
 
 
 async def async_delete_preference(user_id: str, key: str) -> dict:
-    """Async version — await directly from async contexts."""
+    """Async — await from async contexts."""
     return await _pg_delete_pref(user_id, key)
 
 
 async def async_clear_all_preferences(user_id: str) -> bool:
-    """Async version — await directly from async contexts."""
-    from sqlalchemy import text
-
-    from app.database.engine import async_session
-    async with async_session() as session:
-        await session.execute(
-            text("DELETE FROM user_preferences WHERE user_id = :uid"), {"uid": user_id}
-        )
-        await session.commit()
-    return True
+    """Async — await from async contexts."""
+    return await _pg_clear_prefs(user_id)
 
 
 async def async_update_profile_field(user_id: str, field: str, value) -> bool:
-    """Async version — await directly from async contexts."""
+    """Async — await from async contexts."""
     if field not in {"name", "shipping_address"}:
         return False
     return await _pg_update_field(user_id, field, str(value))
 
 
-# Public API — sync wrappers (safe only from truly sync, non-async contexts e.g. tool_factories)
+# ── Public sync API (for LangChain tool callbacks) ────────────────────────────
 
 def get_user_profile(user_id: str) -> dict | None:
     """Return the full user profile including preferences."""
@@ -165,28 +163,18 @@ def ensure_user_exists(user_id: str) -> None:
 
 
 def save_preference(user_id: str, key: str, value: str) -> dict:
-    """Save or update a single preference. Returns the updated preferences dict."""
+    """Save or update a single preference. Returns updated preferences dict."""
     return _run(_pg_save_pref(user_id, key, value))
 
 
 def delete_preference(user_id: str, key: str) -> dict:
-    """Remove a preference key. Returns the updated preferences dict."""
+    """Remove a preference key. Returns updated preferences dict."""
     return _run(_pg_delete_pref(user_id, key))
 
 
 def clear_all_preferences(user_id: str) -> bool:
     """Delete all preferences for a user."""
-    async def _clear():
-        from sqlalchemy import text
-
-        from app.database.engine import async_session
-        async with async_session() as session:
-            await session.execute(
-                text("DELETE FROM user_preferences WHERE user_id = :uid"), {"uid": user_id}
-            )
-            await session.commit()
-        return True
-    return _run(_clear())
+    return _run(_pg_clear_prefs(user_id))
 
 
 def update_profile_field(user_id: str, field: str, value) -> bool:
@@ -199,10 +187,9 @@ def update_profile_field(user_id: str, field: str, value) -> bool:
 def get_all_users() -> list[dict]:
     """Return all user profiles (admin/debug use only)."""
     async def _all():
-        from sqlalchemy import text
-
-        from app.database.engine import async_session
-        async with async_session() as session:
-            uids = (await session.execute(text("SELECT user_id FROM users"))).scalars().fetchall()
+        from app.database.engine import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            uids = [r["user_id"] for r in await conn.fetch("SELECT user_id FROM users")]
         return [p for uid in uids if (p := _run(_pg_get_profile(uid)))]
     return _run(_all())

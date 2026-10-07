@@ -53,6 +53,9 @@ async def lifespan(app: FastAPI):
         raise
     logger.info("Server ready. CORS origins: %s", ALLOWED_ORIGINS)
     yield
+    # Close the asyncpg pool gracefully on shutdown
+    from app.database.engine import close_pool
+    await close_pool()
     logger.info("ShopMate shutting down.")
 
 
