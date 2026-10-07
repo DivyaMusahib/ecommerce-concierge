@@ -61,7 +61,7 @@ async def memory_node(state: SupervisorState) -> dict:
     # Build the request context once — passed through all subsequent nodes
     ctx = RequestContext(user_id=user_id, session_id=session_id)
 
-    profile = get_user_profile(user_id)
+    profile = await get_user_profile(user_id)
     history = redis_client.get_history(session_id)
     redis_client.add_message(session_id, "user", state["user_message"])
 

@@ -58,8 +58,8 @@ async def chat_endpoint(
 
     # Record pre-request memory state for change detection
     from app.memory.long_term import ensure_user_exists, get_user_profile
-    ensure_user_exists(effective_user_id)
-    pre_profile = get_user_profile(effective_user_id)
+    await ensure_user_exists(effective_user_id)
+    pre_profile = await get_user_profile(effective_user_id)
     pre_updated = pre_profile.get("updated_at", "") if pre_profile else ""
 
     response, intent_result, agents_used = await supervisor.process_request(
@@ -100,7 +100,7 @@ async def chat_endpoint(
     # Detect if memory was updated during this request
     memory_updated = False
     try:
-        post_profile = get_user_profile(effective_user_id)
+        post_profile = await get_user_profile(effective_user_id)
         if post_profile:
             post_updated = post_profile.get("updated_at", "")
             if post_updated and post_updated != pre_updated:
@@ -236,8 +236,8 @@ async def get_memory(
         raise HTTPException(status_code=403, detail="Access denied.")
 
     from app.memory.long_term import ensure_user_exists, get_user_profile
-    ensure_user_exists(user_id)
-    profile = get_user_profile(user_id)
+    await ensure_user_exists(user_id)
+    profile = await get_user_profile(user_id)
     if not profile:
         raise HTTPException(status_code=404, detail="User not found")
     return profile
@@ -254,7 +254,7 @@ async def forget_preference(
     if token_user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied.")
     from app.memory.long_term import delete_preference
-    updated = delete_preference(user_id, key)
+    updated = await delete_preference(user_id, key)
     return {"status": "deleted", "remaining_preferences": updated}
 
 @router.delete("/memory/{user_id}/all")
@@ -268,7 +268,7 @@ async def clear_memory(
     if token_user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied.")
     from app.memory.long_term import clear_all_preferences
-    clear_all_preferences(user_id)
+    await clear_all_preferences(user_id)
     return {"status": "cleared", "user_id": user_id}
 
 @router.put("/memory/{user_id}/preference")
@@ -287,7 +287,7 @@ async def save_preference_endpoint(
     value = body.get("value", "").strip()
     if not key or not value:
         raise HTTPException(status_code=400, detail="Both 'key' and 'value' are required.")
-    updated = save_preference(user_id, key, value)
+    updated = await save_preference(user_id, key, value)
     return {"status": "saved", "preferences": updated}
 
 @router.patch("/profile/{user_id}")
@@ -306,7 +306,7 @@ async def update_profile(
     value = body.get("value", "").strip()
     if not field or not value:
         raise HTTPException(status_code=400, detail="Both 'field' and 'value' are required.")
-    success = update_profile_field(user_id, field, value)
+    success = await update_profile_field(user_id, field, str(value))
     if not success:
         raise HTTPException(status_code=400, detail=f"Field '{field}' is not allowed. Only 'name' can be updated via this endpoint.")
     return {"status": "updated", "field": field, "value": value}

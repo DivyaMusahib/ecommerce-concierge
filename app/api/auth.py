@@ -86,7 +86,7 @@ async def register(request: Request, req: RegisterRequest):
 
     # Initialize long-term memory profile
     from app.memory.long_term import ensure_user_exists
-    ensure_user_exists(user_id)
+    await ensure_user_exists(user_id)
 
     token = create_access_token({"sub": user_id})
     return {"access_token": token, "user_id": user_id, "name": req.name}
