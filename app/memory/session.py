@@ -108,6 +108,15 @@ class SessionStore:
         """Clear all messages for a session."""
         _run(_pg_clear(session_id))
 
+    async def async_get_history(self, session_id: str) -> list[dict]:
+        return await _pg_get_history(session_id)
+
+    async def async_add_message(self, session_id: str, role: str, content: str):
+        await _pg_add_message(session_id, role, content)
+
+    async def async_clear(self, session_id: str):
+        await _pg_clear(session_id)
+
 
 # Singleton — named redis_client for backward compat with existing import sites
 redis_client = SessionStore()

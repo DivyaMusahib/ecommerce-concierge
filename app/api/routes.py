@@ -205,7 +205,7 @@ async def clear_session(
     if not token_user_id:
         raise HTTPException(status_code=401, detail="Authentication required.")
     from app.memory.session import redis_client
-    redis_client.clear(session_id)
+    await redis_client.async_clear(session_id)
     return {"status": "cleared", "session_id": session_id}
 
 @router.delete("/cart/{session_id}")

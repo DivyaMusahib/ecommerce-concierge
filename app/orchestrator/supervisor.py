@@ -62,8 +62,8 @@ async def memory_node(state: SupervisorState) -> dict:
     ctx = RequestContext(user_id=user_id, session_id=session_id)
 
     profile = await async_get_user_profile(user_id)
-    history = redis_client.get_history(session_id)
-    redis_client.add_message(session_id, "user", state["user_message"])
+    history = await redis_client.async_get_history(session_id)
+    await redis_client.async_add_message(session_id, "user", state["user_message"])
 
     # Build rich context string for agent system prompts
     profile_str = "Unknown user"
@@ -266,7 +266,7 @@ async def output_guardrails_node(state: SupervisorState) -> dict:
     if not check_output_guardrails(response):
         return {"final_response": "I encountered an error generating a safe response. Please try again."}
 
-    redis_client.add_message(state["session_id"], "assistant", response)
+    await redis_client.async_add_message(state["session_id"], "assistant", response)
     elapsed = time.time() - state.get("start_time", time.time())
     logger.info(f"[Supervisor] Completed in {elapsed:.2f}s | Agents: {state.get('agents_used', [])}")
     return {}
