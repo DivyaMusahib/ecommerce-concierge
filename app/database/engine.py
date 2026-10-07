@@ -2,8 +2,11 @@
 Async SQLAlchemy engine for PostgreSQL.
 
 A single shared engine and session factory for the entire application.
-Supabase pgBouncer (transaction pooler) requires statement_cache_size=0
-and SSL. Both are set in connect_args below.
+Supabase pgBouncer (transaction pooler) requires TWO caches to be disabled:
+  - statement_cache_size=0      → asyncpg's own prepared-statement LRU cache
+  - prepared_statement_cache_size=0 → SQLAlchemy asyncpg adapter's cache layer
+  - pool_pre_ping=False         → pre-ping uses prepared statements internally
+SSL is also required for Supabase connections.
 """
 import logging
 import os
@@ -43,11 +46,21 @@ engine = create_async_engine(
     pool_size=5,
     max_overflow=10,
     pool_recycle=300,
-    pool_pre_ping=True,
+    # pool_pre_ping disabled — it internally uses prepared statements which
+    # pgBouncer transaction mode does not support. Stale connections are
+    # handled by pool_recycle instead.
+    pool_pre_ping=False,
     echo=False,
     connect_args={
         "ssl": "require",
+        # asyncpg native prepared-statement cache — must be 0 for pgBouncer
+        # transaction mode (Supabase pooler port 6543).
         "statement_cache_size": 0,
+        # SQLAlchemy's asyncpg adapter has its OWN prepared-statement cache
+        # layer on top of asyncpg's. This must also be 0, otherwise SQLAlchemy
+        # still sends PREPARE/EXECUTE pairs that pgBouncer drops between
+        # transactions, causing "prepared statement does not exist" errors.
+        "prepared_statement_cache_size": 0,
         "server_settings": {"application_name": "shopmate"},
     },
 )
