@@ -16,7 +16,7 @@ from app.core.guardrails import (
 )
 from app.core.request_context import RequestContext
 from app.evaluation.evaluator import evaluate_response
-from app.memory.long_term import get_user_profile
+from app.memory.long_term import async_get_user_profile
 from app.memory.session import redis_client
 from app.orchestrator.aggregator import aggregate_responses
 from app.orchestrator.classifier import (
@@ -61,7 +61,7 @@ async def memory_node(state: SupervisorState) -> dict:
     # Build the request context once — passed through all subsequent nodes
     ctx = RequestContext(user_id=user_id, session_id=session_id)
 
-    profile = await get_user_profile(user_id)
+    profile = await async_get_user_profile(user_id)
     history = redis_client.get_history(session_id)
     redis_client.add_message(session_id, "user", state["user_message"])
 

@@ -282,21 +282,21 @@ def build_memory_tools(ctx: RequestContext) -> list:
     """Return memory tools bound to the given RequestContext."""
 
     @tool
-    async def remember_user_preference(key: str, value: str) -> str:
+    def remember_user_preference(key: str, value: str) -> str:
         """Save an important fact or preference about the user to long-term memory."""
         if ctx.is_guest:
             return f"Noted: '{key}' = '{value}'. (Note: As a guest, this won't persist.)"
         from app.memory.long_term import save_preference
-        updated = await save_preference(ctx.user_id, key, value)
+        updated = save_preference(ctx.user_id, key, value)
         return f"Remembered: '{key}' = '{value}'. You now have {len(updated)} saved preferences."
 
     @tool
-    async def recall_user_preferences() -> str:
+    def recall_user_preferences() -> str:
         """Retrieve all long-term preferences and profile info saved for this user, including name and shipping address."""
         if ctx.is_guest:
             return "Guest user — no long-term memory. Rely on current chat history for context."
         from app.memory.long_term import get_user_profile
-        profile = await get_user_profile(ctx.user_id)
+        profile = get_user_profile(ctx.user_id)
         if not profile:
             return "No memory found for this user yet."
         prefs = profile.get("preferences", {})
@@ -309,12 +309,12 @@ def build_memory_tools(ctx: RequestContext) -> list:
         )
 
     @tool
-    async def forget_user_preference(key: str) -> str:
+    def forget_user_preference(key: str) -> str:
         """Remove a specific preference from the user's long-term memory."""
         if ctx.is_guest:
             return f"Guest user — preference '{key}' won't persist anyway."
         from app.memory.long_term import delete_preference
-        updated = await delete_preference(ctx.user_id, key)
+        updated = delete_preference(ctx.user_id, key)
         return f"Forgot preference '{key}'. Remaining preferences: {len(updated)}."
 
     return [remember_user_preference, recall_user_preferences, forget_user_preference]

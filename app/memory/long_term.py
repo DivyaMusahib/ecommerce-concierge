@@ -12,7 +12,20 @@ import logging
 logger = logging.getLogger("shopmate.long_term")
 
 
-async def get_user_profile(user_id: str) -> dict | None:
+def _run(coro):
+    """Run an async coroutine from synchronous context."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
+async def _pg_get_profile(user_id: str) -> dict | None:
     from sqlalchemy import text
 
     from app.database.engine import async_session
@@ -35,7 +48,7 @@ async def get_user_profile(user_id: str) -> dict | None:
     }
 
 
-async def ensure_user_exists(user_id: str):
+async def _pg_ensure_user(user_id: str):
     from sqlalchemy import text
 
     from app.database.engine import async_session
@@ -48,11 +61,11 @@ async def ensure_user_exists(user_id: str):
         await session.commit()
 
 
-async def save_preference(user_id: str, key: str, value: str) -> dict:
+async def _pg_save_pref(user_id: str, key: str, value: str) -> dict:
     from sqlalchemy import text
 
     from app.database.engine import async_session
-    await ensure_user_exists(user_id)
+    await _pg_ensure_user(user_id)
     async with async_session() as session:
         await session.execute(text("""
             INSERT INTO user_preferences (user_id, pref_key, pref_value, source, updated_at)
@@ -68,7 +81,7 @@ async def save_preference(user_id: str, key: str, value: str) -> dict:
     return {r[0]: r[1] for r in rows}
 
 
-async def delete_preference(user_id: str, key: str) -> dict:
+async def _pg_delete_pref(user_id: str, key: str) -> dict:
     from sqlalchemy import text
 
     from app.database.engine import async_session
@@ -84,7 +97,7 @@ async def delete_preference(user_id: str, key: str) -> dict:
     return {r[0]: r[1] for r in rows}
 
 
-async def update_profile_field(user_id: str, field: str, value: str) -> bool:
+async def _pg_update_field(user_id: str, field: str, value: str) -> bool:
     from sqlalchemy import text
 
     from app.database.engine import async_session
@@ -97,9 +110,32 @@ async def update_profile_field(user_id: str, field: str, value: str) -> bool:
     return True
 
 
-async def clear_all_preferences(user_id: str) -> bool:
-    """Delete all preferences for a user."""
+# Public API — async-native (use these from async routes/nodes)
+
+async def async_get_user_profile(user_id: str) -> dict | None:
+    """Async version — await directly from async contexts."""
+    return await _pg_get_profile(user_id)
+
+
+async def async_ensure_user_exists(user_id: str) -> None:
+    """Async version — await directly from async contexts."""
+    await _pg_ensure_user(user_id)
+
+
+async def async_save_preference(user_id: str, key: str, value: str) -> dict:
+    """Async version — await directly from async contexts."""
+    return await _pg_save_pref(user_id, key, value)
+
+
+async def async_delete_preference(user_id: str, key: str) -> dict:
+    """Async version — await directly from async contexts."""
+    return await _pg_delete_pref(user_id, key)
+
+
+async def async_clear_all_preferences(user_id: str) -> bool:
+    """Async version — await directly from async contexts."""
     from sqlalchemy import text
+
     from app.database.engine import async_session
     async with async_session() as session:
         await session.execute(
@@ -109,10 +145,64 @@ async def clear_all_preferences(user_id: str) -> bool:
     return True
 
 
-async def get_all_users() -> list[dict]:
+async def async_update_profile_field(user_id: str, field: str, value) -> bool:
+    """Async version — await directly from async contexts."""
+    if field not in {"name", "shipping_address"}:
+        return False
+    return await _pg_update_field(user_id, field, str(value))
+
+
+# Public API — sync wrappers (safe only from truly sync, non-async contexts e.g. tool_factories)
+
+def get_user_profile(user_id: str) -> dict | None:
+    """Return the full user profile including preferences."""
+    return _run(_pg_get_profile(user_id))
+
+
+def ensure_user_exists(user_id: str) -> None:
+    """Create a minimal user record if one does not exist yet."""
+    _run(_pg_ensure_user(user_id))
+
+
+def save_preference(user_id: str, key: str, value: str) -> dict:
+    """Save or update a single preference. Returns the updated preferences dict."""
+    return _run(_pg_save_pref(user_id, key, value))
+
+
+def delete_preference(user_id: str, key: str) -> dict:
+    """Remove a preference key. Returns the updated preferences dict."""
+    return _run(_pg_delete_pref(user_id, key))
+
+
+def clear_all_preferences(user_id: str) -> bool:
+    """Delete all preferences for a user."""
+    async def _clear():
+        from sqlalchemy import text
+
+        from app.database.engine import async_session
+        async with async_session() as session:
+            await session.execute(
+                text("DELETE FROM user_preferences WHERE user_id = :uid"), {"uid": user_id}
+            )
+            await session.commit()
+        return True
+    return _run(_clear())
+
+
+def update_profile_field(user_id: str, field: str, value) -> bool:
+    """Update name or shipping_address on the user record."""
+    if field not in {"name", "shipping_address"}:
+        return False
+    return _run(_pg_update_field(user_id, field, str(value)))
+
+
+def get_all_users() -> list[dict]:
     """Return all user profiles (admin/debug use only)."""
-    from sqlalchemy import text
-    from app.database.engine import async_session
-    async with async_session() as session:
-        uids = (await session.execute(text("SELECT user_id FROM users"))).scalars().fetchall()
-    return [p for uid in uids if (p := await get_user_profile(uid))]
+    async def _all():
+        from sqlalchemy import text
+
+        from app.database.engine import async_session
+        async with async_session() as session:
+            uids = (await session.execute(text("SELECT user_id FROM users"))).scalars().fetchall()
+        return [p for uid in uids if (p := _run(_pg_get_profile(uid)))]
+    return _run(_all())

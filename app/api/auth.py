@@ -84,9 +84,9 @@ async def register(request: Request, req: RegisterRequest):
         """), {"uid": user_id, "email": req.email, "pw": hashed_pw, "name": req.name})
         await session.commit()
 
-    # Initialize long-term memory profile
-    from app.memory.long_term import ensure_user_exists
-    await ensure_user_exists(user_id)
+    # Initialize long-term memory profile (await directly — we're already async)
+    from app.memory.long_term import _pg_ensure_user
+    await _pg_ensure_user(user_id)
 
     token = create_access_token({"sub": user_id})
     return {"access_token": token, "user_id": user_id, "name": req.name}

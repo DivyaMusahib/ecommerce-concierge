@@ -57,9 +57,9 @@ async def chat_endpoint(
     t_start = time.perf_counter()
 
     # Record pre-request memory state for change detection
-    from app.memory.long_term import ensure_user_exists, get_user_profile
-    await ensure_user_exists(effective_user_id)
-    pre_profile = await get_user_profile(effective_user_id)
+    from app.memory.long_term import async_ensure_user_exists, async_get_user_profile
+    await async_ensure_user_exists(effective_user_id)
+    pre_profile = await async_get_user_profile(effective_user_id)
     pre_updated = pre_profile.get("updated_at", "") if pre_profile else ""
 
     response, intent_result, agents_used = await supervisor.process_request(
@@ -100,7 +100,7 @@ async def chat_endpoint(
     # Detect if memory was updated during this request
     memory_updated = False
     try:
-        post_profile = await get_user_profile(effective_user_id)
+        post_profile = await async_get_user_profile(effective_user_id)
         if post_profile:
             post_updated = post_profile.get("updated_at", "")
             if post_updated and post_updated != pre_updated:
@@ -235,9 +235,9 @@ async def get_memory(
     if token_user_id and token_user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied.")
 
-    from app.memory.long_term import ensure_user_exists, get_user_profile
-    await ensure_user_exists(user_id)
-    profile = await get_user_profile(user_id)
+    from app.memory.long_term import async_ensure_user_exists, async_get_user_profile
+    await async_ensure_user_exists(user_id)
+    profile = await async_get_user_profile(user_id)
     if not profile:
         raise HTTPException(status_code=404, detail="User not found")
     return profile
@@ -253,8 +253,8 @@ async def forget_preference(
         raise HTTPException(status_code=401, detail="Authentication required.")
     if token_user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied.")
-    from app.memory.long_term import delete_preference
-    updated = await delete_preference(user_id, key)
+    from app.memory.long_term import async_delete_preference
+    updated = await async_delete_preference(user_id, key)
     return {"status": "deleted", "remaining_preferences": updated}
 
 @router.delete("/memory/{user_id}/all")
@@ -267,8 +267,8 @@ async def clear_memory(
         raise HTTPException(status_code=401, detail="Authentication required.")
     if token_user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied.")
-    from app.memory.long_term import clear_all_preferences
-    await clear_all_preferences(user_id)
+    from app.memory.long_term import async_clear_all_preferences
+    await async_clear_all_preferences(user_id)
     return {"status": "cleared", "user_id": user_id}
 
 @router.put("/memory/{user_id}/preference")
@@ -282,12 +282,12 @@ async def save_preference_endpoint(
         raise HTTPException(status_code=401, detail="Authentication required.")
     if token_user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied.")
-    from app.memory.long_term import save_preference
+    from app.memory.long_term import async_save_preference
     key = body.get("key", "").strip()
     value = body.get("value", "").strip()
     if not key or not value:
         raise HTTPException(status_code=400, detail="Both 'key' and 'value' are required.")
-    updated = await save_preference(user_id, key, value)
+    updated = await async_save_preference(user_id, key, value)
     return {"status": "saved", "preferences": updated}
 
 @router.patch("/profile/{user_id}")
@@ -301,12 +301,12 @@ async def update_profile(
         raise HTTPException(status_code=401, detail="Authentication required.")
     if token_user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied.")
-    from app.memory.long_term import update_profile_field
+    from app.memory.long_term import async_update_profile_field
     field = body.get("field", "").strip()
     value = body.get("value", "").strip()
     if not field or not value:
         raise HTTPException(status_code=400, detail="Both 'field' and 'value' are required.")
-    success = await update_profile_field(user_id, field, str(value))
+    success = await async_update_profile_field(user_id, field, value)
     if not success:
         raise HTTPException(status_code=400, detail=f"Field '{field}' is not allowed. Only 'name' can be updated via this endpoint.")
     return {"status": "updated", "field": field, "value": value}
