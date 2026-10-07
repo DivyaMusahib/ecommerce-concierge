@@ -22,13 +22,13 @@ COPY . .
 # Create data directory for SQLite fallback
 RUN mkdir -p /app/data
 
-# Expose API port
-EXPOSE 8000
+# Expose default port (Render overrides via $PORT env var, defaults to 10000)
+EXPOSE 10000
 
-# Health check
+# Health check — uses $PORT at runtime
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD python -c "import urllib.request, os; urllib.request.urlopen('http://localhost:' + os.environ.get('PORT','10000') + '/health')" || exit 1
 
-# Run with uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--workers", "1", "--log-level", "info"]
+# Shell form CMD so ${PORT} is expanded at runtime by the shell.
+# Render injects PORT=10000; locally falls back to 8000.
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --log-level info
