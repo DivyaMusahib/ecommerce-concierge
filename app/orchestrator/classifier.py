@@ -11,11 +11,15 @@ Rule-based fixes (v2):
 - Multi-intent: all matching intents are always returned
 - Edge case: "show me products ... and track order" now fires both intents
 """
+import logging
 import re
+
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
-from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.core.config import get_llm
+
+logger = logging.getLogger(__name__)
 
 
 class IntentResult(BaseModel):
@@ -59,7 +63,7 @@ Assess urgency based on sentiment: LOW (neutral), MEDIUM (mild concern), HIGH (f
         result = await structured_llm.ainvoke([system, user])
         return result
     except Exception as e:
-        print(f"[Classifier] LLM classification error: {e}")
+        logger.warning(f"[Classifier] LLM classification error: {e}")
         return IntentResult(intents=["PRODUCT_INQUIRY"], urgency="LOW", entities={})
 
 
@@ -123,7 +127,7 @@ def rule_based_classify(message: str) -> IntentResult | None:
     cart_natural = re.search(r'\badd\b.{0,60}\b(cart|bag)\b', msg)
     # Conversational: "add X also", "add the braided one", standalone add with known product hint
     cart_conversational = (
-        re.search(r'^\s*add\b.{0,80}$', msg) and 
+        re.search(r'^\s*add\b.{0,80}$', msg) and
         re.search(r'\b(also|too|as well|one|it|them|the braided|the cable|the mouse|the keyboard|the earphone|the bulb|the stand)\b', msg)
     )
     # Direct add without cart word (e.g. "add iphone 18 pro max and boat wired earphones")

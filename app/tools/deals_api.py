@@ -5,7 +5,9 @@ Provides price history analysis, coupon validation, and deal checking.
 All data is now sourced from the SQLite database instead of hardcoded dicts.
 """
 import json
+
 from langchain_core.tools import tool
+
 from app.database.db import get_conn
 
 
@@ -20,17 +22,18 @@ def get_price_history(product_name: str) -> str:
     with get_conn() as conn:
         # Try exact key match first
         row = conn.execute(
-            "SELECT ph.*, p.name, p.price FROM price_history ph "
-            "JOIN products p ON p.product_key = ph.product_key "
-            "WHERE ph.product_key = ?", (q,)
+            "SELECT product_key, name, price FROM products WHERE product_key = ?", (q,)
         ).fetchone()
 
         if not row:
             # Fuzzy: check if query matches any product name or synonym
-            products = conn.execute(
-                "SELECT ph.*, p.name, p.price, p.synonyms FROM price_history ph "
-                "JOIN products p ON p.product_key = ph.product_key"
-            ).fetchall()
+            products = conn.execute("""
+                SELECT DISTINCT p.product_key, p.name, p.price,
+                       GROUP_CONCAT(ps.synonym, ',') AS synonyms
+                FROM products p
+                LEFT JOIN product_synonyms ps ON ps.product_key = p.product_key
+                GROUP BY p.product_key
+            """).fetchall()
             for p in products:
                 synonyms = (p["synonyms"] or "").lower()
                 if q in p["product_key"] or q in p["name"].lower() or q in synonyms:
@@ -40,11 +43,24 @@ def get_price_history(product_name: str) -> str:
     if not row:
         return json.dumps({"error": f"No price history for '{product_name}'."})
 
-    prices = json.loads(row["prices_json"])
+    # Fetch price history rows (most recent first, take up to 4)
+    with get_conn() as conn:
+        ph_rows = conn.execute(
+            "SELECT price FROM price_history WHERE product_key = ? ORDER BY recorded_at DESC LIMIT 4",
+            (row["product_key"],)
+        ).fetchall()
+
+    if not ph_rows:
+        return json.dumps({"error": f"No price history entries for '{product_name}'."})
+
+    # Reverse so oldest→newest for trend analysis
+    prices = [r["price"] for r in reversed(ph_rows)]
     current = prices[-1]
     highest = max(prices)
     lowest = min(prices)
-    trend = "stable" if prices[-1] == prices[-2] else ("dropping" if prices[-1] < prices[-2] else "rising")
+    trend = "stable" if len(prices) < 2 or prices[-1] == prices[-2] else (
+        "dropping" if prices[-1] < prices[-2] else "rising"
+    )
     drop_pct = round((highest - current) / highest * 100, 1) if highest > current else 0
 
     return json.dumps({

@@ -1,20 +1,22 @@
 """
-Self-Critique Evaluator - LangChain structured output.
+Self-Critique Evaluator — LangChain structured output."""
+import logging
 
-Checks response quality: groundedness, relevance, completeness.
-Returns structured pass/fail with actionable critique for retry.
-"""
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
-from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.core.config import get_llm
 
+logger = logging.getLogger("shopmate.evaluator")
 
 class EvaluationResult(BaseModel):
     """Structured evaluation output."""
-    is_passing: bool = Field(description="True if the response correctly answers the user, is grounded in tool data, and is helpful.")
-    critique: str = Field(description="If not passing, explain specifically what is wrong so the agent can fix it on retry.")
-
+    is_passing: bool = Field(
+        description="True if the response correctly answers the user, is grounded in tool data, and is helpful."
+    )
+    critique: str = Field(
+        description="If not passing, explain specifically what is wrong so the agent can fix it on retry."
+    )
 
 async def evaluate_response(user_message: str, drafted_response: str) -> EvaluationResult:
     """
@@ -42,5 +44,7 @@ If any check fails, return is_passing: false and provide specific, actionable cr
         result = await structured_llm.ainvoke([system, user])
         return result
     except Exception as e:
-        print(f"[Evaluator] Error: {e}")
-        return EvaluationResult(is_passing=True, critique="Evaluation skipped due to error.")
+        logger.warning("[Evaluator] LLM call failed (%s: %s). Passing response without QA.",
+                       type(e).__name__, e)
+        return EvaluationResult(is_passing=True,
+                                critique=f"Evaluation skipped: {type(e).__name__}")

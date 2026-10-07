@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    container_name: shopmate-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL to use local Postgres in dev
+      DATABASE_URL: postgresql+asyncpg://shopmate:localdev@db:5432/shopmate
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Mount data directory so SQLite fallback persists
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  db:
+    image: postgres:16-alpine
+    container_name: shopmate-postgres
+    environment:
+      POSTGRES_DB: shopmate
+      POSTGRES_USER: shopmate
+      POSTGRES_PASSWORD: localdev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopmate -d shopmate"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+    driver: local

@@ -1,194 +1,166 @@
 """
-Long-Term Memory - SQLite-backed persistent user profiles.
+Long-term user memory — PostgreSQL-backed user profiles and preferences.
 
-Stores user identity + arbitrary key-value preferences per user.
-The AI can read and write preferences via LangChain tools, so facts
-the user mentions (budget, brands, allergies, etc.) persist across sessions.
-
-Schema:
-  users(user_id, name, default_shipping, preferences_json, updated_at)
+Stores per-user preferences as individual rows so concurrent agent writes
+never clobber each other. All operations are synchronous wrappers around
+async PostgreSQL queries.
 """
-import json
-import sqlite3
-import os
-from datetime import datetime
+import asyncio
+import concurrent.futures
+import logging
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "users.db")
-
-
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")  # Safe concurrent reads across threads
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+logger = logging.getLogger("shopmate.long_term")
 
 
-def init_db():
-    """Create tables and seed demo users if not already present."""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    with _connect() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id          TEXT PRIMARY KEY,
-                name             TEXT,
-                preferences_json TEXT DEFAULT '{}',
-                updated_at       TEXT
-            )
-        """)
-        # Seed demo user to match the auth DB user_1
-        conn.execute("""
-            INSERT OR IGNORE INTO users
-                (user_id, name, preferences_json, updated_at)
-            VALUES
-                ('user_1', 'Demo User', '{"preferred_budget": "flexible", "interests": "electronics, gadgets"}', ?)
-        """, (datetime.utcnow().isoformat(),))
-        conn.execute("""
-            INSERT OR IGNORE INTO users
-                (user_id, name, preferences_json, updated_at)
-            VALUES
-                ('user_2', 'Bob', '{"preferred_brands": "Samsung, Apple"}', ?)
-        """, (datetime.utcnow().isoformat(),))
-        conn.commit()
-
-
-# Auto-initialize on import
-init_db()
-
-
-# ── Read ────────────────────────────────────────────────────────────────────
-
-def get_user_profile(user_id: str) -> dict | None:
-    """Return the full user profile including parsed preferences."""
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-
-    if not row:
-        return None
-
-    prefs = {}
+def _run(coro):
+    """Run an async coroutine from synchronous context."""
     try:
-        prefs = json.loads(row["preferences_json"] or "{}")
-    except json.JSONDecodeError:
-        pass
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
+async def _pg_get_profile(user_id: str) -> dict | None:
+    from sqlalchemy import text
+
+    from app.database.engine import async_session
+    async with async_session() as session:
+        row = (await session.execute(
+            text("SELECT * FROM users WHERE user_id = :uid"), {"uid": user_id}
+        )).mappings().fetchone()
+        if not row:
+            return None
+        prefs_rows = (await session.execute(
+            text("SELECT pref_key, pref_value FROM user_preferences WHERE user_id = :uid"),
+            {"uid": user_id}
+        )).fetchall()
     return {
-        "user_id": row["user_id"],
+        "user_id": user_id,
         "name": row["name"],
-        "preferences": prefs,
-        "updated_at": row["updated_at"],
+        "shipping_address": row.get("shipping_address") or "",
+        "preferences": {r[0]: r[1] for r in prefs_rows},
+        "updated_at": str(row.get("updated_at", "")),
     }
 
 
-def get_all_users() -> list[dict]:
-    """Return all user profiles (for admin/debug)."""
-    with _connect() as conn:
-        rows = conn.execute("SELECT * FROM users").fetchall()
-    result = []
-    for row in rows:
-        prefs = {}
-        try:
-            prefs = json.loads(row["preferences_json"] or "{}")
-        except json.JSONDecodeError:
-            pass
-        result.append({
-            "user_id": row["user_id"],
-            "name": row["name"],
-            "preferences": prefs,
-            "updated_at": row["updated_at"],
-        })
-    return result
+async def _pg_ensure_user(user_id: str):
+    from sqlalchemy import text
+
+    from app.database.engine import async_session
+    async with async_session() as session:
+        await session.execute(text("""
+            INSERT INTO users (user_id, email, password_hash, name)
+            VALUES (:uid, :email, '', :uid)
+            ON CONFLICT (user_id) DO NOTHING
+        """), {"uid": user_id, "email": f"{user_id}@guest.local"})
+        await session.commit()
 
 
-# ── Write ───────────────────────────────────────────────────────────────────
+async def _pg_save_pref(user_id: str, key: str, value: str) -> dict:
+    from sqlalchemy import text
+
+    from app.database.engine import async_session
+    await _pg_ensure_user(user_id)
+    async with async_session() as session:
+        await session.execute(text("""
+            INSERT INTO user_preferences (user_id, pref_key, pref_value, source, updated_at)
+            VALUES (:uid, :k, :v, 'agent', NOW())
+            ON CONFLICT (user_id, pref_key) DO UPDATE
+            SET pref_value = EXCLUDED.pref_value, updated_at = NOW()
+        """), {"uid": user_id, "k": key, "v": value})
+        await session.commit()
+        rows = (await session.execute(
+            text("SELECT pref_key, pref_value FROM user_preferences WHERE user_id = :uid"),
+            {"uid": user_id}
+        )).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+async def _pg_delete_pref(user_id: str, key: str) -> dict:
+    from sqlalchemy import text
+
+    from app.database.engine import async_session
+    async with async_session() as session:
+        await session.execute(text("""
+            DELETE FROM user_preferences WHERE user_id = :uid AND pref_key = :k
+        """), {"uid": user_id, "k": key})
+        await session.commit()
+        rows = (await session.execute(
+            text("SELECT pref_key, pref_value FROM user_preferences WHERE user_id = :uid"),
+            {"uid": user_id}
+        )).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+async def _pg_update_field(user_id: str, field: str, value: str) -> bool:
+    from sqlalchemy import text
+
+    from app.database.engine import async_session
+    async with async_session() as session:
+        await session.execute(
+            text(f"UPDATE users SET {field} = :v, updated_at = NOW() WHERE user_id = :uid"),
+            {"v": value, "uid": user_id}
+        )
+        await session.commit()
+    return True
+
+
+# Public API
+
+def get_user_profile(user_id: str) -> dict | None:
+    """Return the full user profile including preferences."""
+    return _run(_pg_get_profile(user_id))
+
 
 def ensure_user_exists(user_id: str) -> None:
-    """Create a minimal user record if one doesn't exist yet."""
-    with _connect() as conn:
-        conn.execute("""
-            INSERT OR IGNORE INTO users (user_id, name, preferences_json, updated_at)
-            VALUES (?, ?, '{}', ?)
-        """, (user_id, user_id, datetime.utcnow().isoformat()))
-        conn.commit()
+    """Create a minimal user record if one does not exist yet."""
+    _run(_pg_ensure_user(user_id))
 
 
 def save_preference(user_id: str, key: str, value: str) -> dict:
-    """
-    Save or update a single preference for a user.
-    Creates the user automatically if they don't exist.
-    Returns the full updated preferences dict.
-    """
-    ensure_user_exists(user_id)
-
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT preferences_json FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-
-        prefs = {}
-        try:
-            prefs = json.loads(row["preferences_json"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        prefs[key] = value
-        conn.execute("""
-            UPDATE users SET preferences_json = ?, updated_at = ? WHERE user_id = ?
-        """, (json.dumps(prefs), datetime.utcnow().isoformat(), user_id))
-        conn.commit()
-
-    return prefs
+    """Save or update a single preference. Returns the updated preferences dict."""
+    return _run(_pg_save_pref(user_id, key, value))
 
 
 def delete_preference(user_id: str, key: str) -> dict:
-    """Remove a single preference key. Returns updated preferences."""
-    ensure_user_exists(user_id)
-
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT preferences_json FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-
-        prefs = {}
-        try:
-            prefs = json.loads(row["preferences_json"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        prefs.pop(key, None)
-        conn.execute("""
-            UPDATE users SET preferences_json = ?, updated_at = ? WHERE user_id = ?
-        """, (json.dumps(prefs), datetime.utcnow().isoformat(), user_id))
-        conn.commit()
-
-    return prefs
+    """Remove a preference key. Returns the updated preferences dict."""
+    return _run(_pg_delete_pref(user_id, key))
 
 
 def clear_all_preferences(user_id: str) -> bool:
-    """Wipe all preferences for a user (keep profile fields). Returns True on success."""
-    ensure_user_exists(user_id)
-    with _connect() as conn:
-        conn.execute("""
-            UPDATE users SET preferences_json = '{}', updated_at = ? WHERE user_id = ?
-        """, (datetime.utcnow().isoformat(), user_id))
-        conn.commit()
-    return True
+    """Delete all preferences for a user."""
+    async def _clear():
+        from sqlalchemy import text
+
+        from app.database.engine import async_session
+        async with async_session() as session:
+            await session.execute(
+                text("DELETE FROM user_preferences WHERE user_id = :uid"), {"uid": user_id}
+            )
+            await session.commit()
+        return True
+    return _run(_clear())
 
 
 def update_profile_field(user_id: str, field: str, value) -> bool:
-    """Update a top-level profile field. Currently only 'name' is supported
-    in the users.db (long-term memory) table. Shipping address is managed
-    separately in shopmate.db via the cart/checkout flow."""
-    allowed = {"name"}
-    if field not in allowed:
+    """Update name or shipping_address on the user record."""
+    if field not in {"name", "shipping_address"}:
         return False
-    ensure_user_exists(user_id)
-    with _connect() as conn:
-        conn.execute(
-            f"UPDATE users SET {field} = ?, updated_at = ? WHERE user_id = ?",
-            (value, datetime.utcnow().isoformat(), user_id)
-        )
-        conn.commit()
-    return True
+    return _run(_pg_update_field(user_id, field, str(value)))
+
+
+def get_all_users() -> list[dict]:
+    """Return all user profiles (admin/debug use only)."""
+    async def _all():
+        from sqlalchemy import text
+
+        from app.database.engine import async_session
+        async with async_session() as session:
+            uids = (await session.execute(text("SELECT user_id FROM users"))).scalars().fetchall()
+        return [p for uid in uids if (p := _run(_pg_get_profile(uid)))]
+    return _run(_all())

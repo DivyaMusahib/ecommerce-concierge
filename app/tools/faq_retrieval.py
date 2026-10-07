@@ -4,11 +4,15 @@ FAQ Retrieval Tool - Real RAG with FAISS + Gemini Embeddings.
 Uses Gemini's API for embeddings to save RAM (ideal for free hosting tiers).
 FAISS index is built from faq.md on first run and persisted to disk.
 """
+import logging
 import os
-from langchain_core.tools import tool
+
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_core.documents import Document
+from langchain_core.tools import tool
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+logger = logging.getLogger("shopmate.faq")
 
 # Paths
 _DIR = os.path.dirname(__file__)
@@ -27,12 +31,12 @@ def _get_embeddings() -> GoogleGenerativeAIEmbeddings:
     global _embeddings
     if _embeddings is None:
         from app.core.config import settings
-        print(f"[FAQ RAG] Loading Gemini embeddings model: {_EMBEDDING_MODEL}")
+        logger.info("[FAQ RAG] Loading Gemini embeddings model: %s", _EMBEDDING_MODEL)
         _embeddings = GoogleGenerativeAIEmbeddings(
             model=_EMBEDDING_MODEL,
             google_api_key=settings.GEMINI_API_KEY
         )
-        print("[FAQ RAG] Embeddings model ready.")
+        logger.info("[FAQ RAG] Embeddings model ready.")
     return _embeddings
 
 
@@ -60,7 +64,7 @@ def _get_vector_store() -> FAISS | None:
         return vector_store
 
     if not os.path.exists(_FAQ_PATH):
-        print("[FAQ RAG] faq.md not found.")
+        logger.warning("[FAQ RAG] faq.md not found at %s", _FAQ_PATH)
         return None
 
     embeddings = _get_embeddings()
@@ -73,10 +77,10 @@ def _get_vector_store() -> FAISS | None:
                 embeddings,
                 allow_dangerous_deserialization=True,
             )
-            print("[FAQ RAG] Loaded FAISS index from disk.")
+            logger.info("[FAQ RAG] Loaded FAISS index from disk.")
             return vector_store
         except Exception as e:
-            print(f"[FAQ RAG] Disk load failed ({e}), rebuilding...")
+            logger.warning("[FAQ RAG] Disk load failed (%s), rebuilding...", e)
 
     # Build from scratch and persist
     docs = _build_docs()
@@ -85,7 +89,7 @@ def _get_vector_store() -> FAISS | None:
 
     vector_store = FAISS.from_documents(docs, embeddings)
     vector_store.save_local(_INDEX_PATH)
-    print(f"[FAQ RAG] Built and persisted FAISS index ({len(docs)} chunks) using {_EMBEDDING_MODEL}.")
+    logger.info("[FAQ RAG] Built and persisted FAISS index (%d chunks) using %s.", len(docs), _EMBEDDING_MODEL)
     return vector_store
 
 

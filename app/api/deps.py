@@ -8,15 +8,17 @@ Routes can then use this to enforce the authenticated user_id instead
 of blindly trusting the request body.
 """
 import os
+
 import jwt
 from fastapi import Header, HTTPException
-from typing import Optional
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "shopmate_dev_secret_change_in_production")
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("FATAL: JWT_SECRET_KEY environment variable is not set.")
 ALGORITHM = "HS256"
 
 
-def get_user_from_token(authorization: Optional[str] = Header(default=None)) -> str | None:
+def get_user_from_token(authorization: str | None = Header(default=None)) -> str | None:
     """
     Extract and validate user_id from a Bearer JWT token.
 

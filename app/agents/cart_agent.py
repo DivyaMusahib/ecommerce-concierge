@@ -12,11 +12,19 @@ from langgraph.prebuilt import create_react_agent
 
 from app.core.config import get_llm
 from app.tools.cart_api import (
-    add_to_cart, remove_from_cart, get_cart,
-    apply_coupon_to_cart, checkout,
-    check_shipping_address, save_shipping_address,
+    add_to_cart,
+    apply_coupon_to_cart,
+    check_shipping_address,
+    checkout,
+    get_cart,
+    remove_from_cart,
+    save_shipping_address,
 )
-from app.tools.memory_tools import remember_user_preference, recall_user_preferences, forget_user_preference
+from app.tools.memory_tools import (
+    forget_user_preference,
+    recall_user_preferences,
+    remember_user_preference,
+)
 
 SYSTEM_PROMPT = """You are a specialized e-commerce Cart & Checkout Agent with long-term memory.
 

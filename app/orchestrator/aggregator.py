@@ -4,9 +4,13 @@ Aggregator - LangChain-based response synthesis.
 Combines outputs from multiple agents into a single cohesive response.
 Handles conflict resolution and source attribution.
 """
-from langchain_core.messages import SystemMessage, HumanMessage
+import logging
+
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.core.config import get_llm
+
+logger = logging.getLogger(__name__)
 
 
 async def aggregate_responses(user_message: str, agent_responses: list[str]) -> str:
@@ -41,5 +45,5 @@ Your job:
             ).strip()
         return str(content)
     except Exception as e:
-        print(f"[Aggregator] Error: {e}")
+        logger.warning(f"[Aggregator] Error: {e}")
         return "\n\n".join(agent_responses)  # Fallback: join raw responses

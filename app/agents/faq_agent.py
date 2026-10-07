@@ -7,7 +7,11 @@ from langgraph.prebuilt import create_react_agent
 
 from app.core.config import get_llm
 from app.tools.faq_retrieval import search_faq
-from app.tools.memory_tools import remember_user_preference, recall_user_preferences, forget_user_preference
+from app.tools.memory_tools import (
+    forget_user_preference,
+    recall_user_preferences,
+    remember_user_preference,
+)
 
 SYSTEM_PROMPT = """You are a specialized e-commerce FAQ Agent with long-term memory. Your job is to answer customer questions about:
 - Return and refund policies

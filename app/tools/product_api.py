@@ -16,7 +16,9 @@ Returns:
   - None   → nothing scored above minimum threshold
 """
 import json
+
 from langchain_core.tools import tool
+
 from app.database.db import get_conn
 
 # Score gap threshold — if top 2 candidates are within this many points, it's ambiguous
@@ -45,7 +47,13 @@ def _fuzzy_match(query: str) -> dict | list | None:
         return None
 
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM products").fetchall()
+        rows = conn.execute("""
+            SELECT p.*,
+                   GROUP_CONCAT(ps.synonym, ',') AS synonyms
+            FROM products p
+            LEFT JOIN product_synonyms ps ON ps.product_key = p.product_key
+            GROUP BY p.product_key
+        """).fetchall()
 
     rows_as_dicts = [dict(r) for r in rows]
 
@@ -156,7 +164,12 @@ def _fuzzy_match(query: str) -> dict | list | None:
 def _format_product(row: dict) -> dict:
     offers = []
     try:
-        offers = json.loads(row.get("offers_json", "[]"))
+        with get_conn() as conn:
+            offer_rows = conn.execute(
+                "SELECT offer_text FROM product_offers WHERE product_key = ? AND active = 1",
+                (row.get("product_key", ""),)
+            ).fetchall()
+        offers = [r[0] for r in offer_rows]
     except Exception:
         pass
     return {
@@ -205,27 +218,42 @@ def search_products(category: str = "", max_price: int = 0, keyword: str = "") -
     """
     Search products by category, keyword, and/or maximum price (in INR).
     Returns a list of matching products with name, price, rating, and availability.
-    
+
     Parameters:
     - category: Filter by product category. Examples: Smartphone, Laptop, Audio, Peripherals,
       Monitors, Tablet, Gaming, Wearables, Smart Home, Storage, Accessories, Networking,
       Cameras, E-Reader, Television. Leave empty to search all categories.
     - max_price: Maximum price in INR (0 = no limit).
     - keyword: Search term to match against product name or synonyms (e.g. "iphone", "gaming mouse").
-    
+
     Use this when the user asks about a product FAMILY (e.g. "all iPhones", "gaming laptops",
     "headphones under 5000") rather than a specific product name.
     """
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM products").fetchall()
+        # Build SQL filters for performance (no full table scan)
+        conditions = []
+        params = {}
+        if category:
+            conditions.append("LOWER(p.category) LIKE :cat")
+            params["cat"] = f"%{category.lower()}%"
+        if max_price > 0:
+            conditions.append("p.price <= :max_price")
+            params["max_price"] = max_price
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        base_rows = conn.execute(f"""
+            SELECT DISTINCT p.*,
+                   GROUP_CONCAT(ps.synonym, ',') AS synonyms
+            FROM products p
+            LEFT JOIN product_synonyms ps ON ps.product_key = p.product_key
+            {where_clause}
+            GROUP BY p.product_key
+        """, params).fetchall()
 
     kw = keyword.lower().strip()
     results = []
-    for row in rows:
-        if category and category.lower() not in row["category"].lower():
-            continue
-        if max_price > 0 and row["price"] > max_price:
-            continue
+    for row in base_rows:
         if kw:
             name_match = kw in row["name"].lower()
             key_match = kw in row["product_key"].lower()

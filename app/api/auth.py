@@ -1,27 +1,33 @@
+"""
+Auth Routes — register/login endpoints, JWT creation.
+
+Auth routes — register, login, and JWT token creation.
+"""
+import logging
 import os
 import time
-import logging
+import uuid
+
 import bcrypt
 import jwt
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from app.database.db import get_conn
-import uuid
-from datetime import datetime
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 router = APIRouter()
 logger = logging.getLogger("shopmate.auth")
+limiter = Limiter(key_func=get_remote_address)
 
-# JWT secret — MUST be set via JWT_SECRET_KEY env var in production.
-# A hardcoded fallback is intentionally kept for local dev only.
-_raw_secret = os.getenv("JWT_SECRET_KEY", "")
-if not _raw_secret:
-    _raw_secret = "shopmate_dev_secret_change_in_production"
-    logger.warning(
-        "⚠️  JWT_SECRET_KEY env var is NOT set! "
-        "Using insecure default secret — set JWT_SECRET_KEY before deploying to production."
+# JWT secret — MUST be set via JWT_SECRET_KEY env var.
+# The server will refuse to start if this is missing — no insecure fallback.
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "FATAL: JWT_SECRET_KEY environment variable is not set. "
+        "The server cannot start without it. "
+        "Generate one with: python -c 'import secrets; print(secrets.token_hex(32))'"
     )
-SECRET_KEY = _raw_secret
 ALGORITHM = "HS256"
 
 
@@ -56,43 +62,59 @@ def create_access_token(data: dict) -> str:
 
 
 @router.post("/auth/register")
-def register(req: RegisterRequest):
-    with get_conn() as conn:
-        existing = conn.execute("SELECT 1 FROM users WHERE email = ?", (req.email,)).fetchone()
+@limiter.limit("3/minute")
+async def register(request: Request, req: RegisterRequest):
+    from sqlalchemy import text
+
+    from app.database.engine import async_session
+
+    async with async_session() as session:
+        existing = (await session.execute(
+            text("SELECT 1 FROM users WHERE email = :email"),
+            {"email": req.email}
+        )).fetchone()
         if existing:
             raise HTTPException(status_code=400, detail="Email already registered")
 
         user_id = f"user_{uuid.uuid4().hex[:8]}"
         hashed_pw = get_password_hash(req.password)
-        conn.execute("""
-            INSERT INTO users (user_id, email, password_hash, name, created_at, shipping_address)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (user_id, req.email, hashed_pw, req.name, datetime.utcnow().isoformat(), ""))
-        conn.commit()
+        await session.execute(text("""
+            INSERT INTO users (user_id, email, password_hash, name, shipping_address)
+            VALUES (:uid, :email, :pw, :name, '')
+        """), {"uid": user_id, "email": req.email, "pw": hashed_pw, "name": req.name})
+        await session.commit()
 
-    # Initialize long term memory profile
-    from app.memory.long_term import ensure_user_exists, update_profile_field
+    # Initialize long-term memory profile
+    from app.memory.long_term import ensure_user_exists
     ensure_user_exists(user_id)
-    update_profile_field(user_id, "name", req.name)
 
     token = create_access_token({"sub": user_id})
     return {"access_token": token, "user_id": user_id, "name": req.name}
 
 
 @router.post("/auth/login")
-def login(req: LoginRequest):
-    with get_conn() as conn:
-        user = conn.execute("SELECT * FROM users WHERE email = ?", (req.email,)).fetchone()
-        if not user:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+@limiter.limit("5/minute")
+async def login(request: Request, req: LoginRequest):
+    from sqlalchemy import text
 
-        try:
-            if not verify_password(req.password, user["password_hash"]):
-                raise HTTPException(status_code=401, detail="Invalid credentials")
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+    from app.database.engine import async_session
 
-    token = create_access_token({"sub": user["user_id"]})
-    return {"access_token": token, "user_id": user["user_id"], "name": user["name"]}
+    async with async_session() as session:
+        row = (await session.execute(
+            text("SELECT user_id, name, password_hash FROM users WHERE email = :email"),
+            {"email": req.email}
+        )).mappings().fetchone()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    try:
+        if not verify_password(req.password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token({"sub": row["user_id"]})
+    return {"access_token": token, "user_id": row["user_id"], "name": row["name"]}

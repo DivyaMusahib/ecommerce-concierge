@@ -1,58 +1,118 @@
 """
-Session Memory - SQLite-backed short-term conversational context.
+Session memory — PostgreSQL-backed chat history store.
 
-Replaces the old MockRedisSession (in-process dict) that was wiped on
-every server restart. This implementation:
-  - Persists across server restarts
-  - Works correctly in multi-worker deployments
-  - Keeps the last 6 messages (3 turns) per session
-  - Thread-safe via SQLite WAL mode
+Keeps the last MAX_MESSAGES messages per session in the sessions/session_messages
+tables. The public singleton `redis_client` preserves backward compatibility
+with existing import sites.
 """
-import json
-from datetime import datetime
-from app.database.db import get_conn
+import asyncio
+import concurrent.futures
+import logging
+
+logger = logging.getLogger("shopmate.session")
+
+MAX_MESSAGES = 20
 
 
-class SQLiteSession:
-    """
-    SQLite-backed session store. Replaces MockRedisSession.
-    API-compatible with the old MockRedisSession so no other code changes needed.
-    """
+def _run(coro):
+    """Run an async coroutine from synchronous context."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
+async def _pg_get_history(session_id: str) -> list[dict]:
+    from sqlalchemy import text
+
+    from app.database.engine import async_session
+    async with async_session() as session:
+        rows = (await session.execute(text("""
+            SELECT role, content FROM session_messages
+            WHERE session_id = :sid
+            ORDER BY created_at ASC
+            LIMIT :limit
+        """), {"sid": session_id, "limit": MAX_MESSAGES})).fetchall()
+    return [{"role": r[0], "content": r[1]} for r in rows]
+
+
+async def _pg_add_message(session_id: str, role: str, content: str):
+    from sqlalchemy import text
+
+    from app.database.engine import async_session
+    async with async_session() as session:
+        await session.execute(text("""
+            INSERT INTO sessions (session_id)
+            VALUES (:sid)
+            ON CONFLICT (session_id) DO UPDATE SET updated_at = NOW()
+        """), {"sid": session_id})
+
+        await session.execute(text("""
+            INSERT INTO session_messages (session_id, role, content)
+            VALUES (:sid, :role, :content)
+        """), {"sid": session_id, "role": role, "content": content})
+
+        await session.execute(text("""
+            UPDATE sessions
+            SET message_count = message_count + 1, updated_at = NOW()
+            WHERE session_id = :sid
+        """), {"sid": session_id})
+
+        count = (await session.execute(text("""
+            SELECT COUNT(*) FROM session_messages WHERE session_id = :sid
+        """), {"sid": session_id})).scalar()
+
+        if count and count > MAX_MESSAGES:
+            excess = count - MAX_MESSAGES
+            logger.info("Pruning %d old messages for session %s", excess, session_id[:16])
+            await session.execute(text("""
+                DELETE FROM session_messages WHERE id IN (
+                    SELECT id FROM session_messages
+                    WHERE session_id = :sid
+                    ORDER BY created_at ASC
+                    LIMIT :excess
+                )
+            """), {"sid": session_id, "excess": excess})
+
+        await session.commit()
+
+
+async def _pg_clear(session_id: str):
+    from sqlalchemy import text
+
+    from app.database.engine import async_session
+    async with async_session() as session:
+        await session.execute(
+            text("DELETE FROM session_messages WHERE session_id = :sid"),
+            {"sid": session_id}
+        )
+        await session.execute(
+            text("DELETE FROM sessions WHERE session_id = :sid"),
+            {"sid": session_id}
+        )
+        await session.commit()
+
+
+class SessionStore:
+    """PostgreSQL-backed session store for chat history."""
 
     def get_history(self, session_id: str) -> list[dict]:
-        """Retrieve the message history for a session."""
-        with get_conn() as conn:
-            row = conn.execute(
-                "SELECT history_json FROM sessions WHERE session_id = ?", (session_id,)
-            ).fetchone()
-        if not row:
-            return []
-        try:
-            return json.loads(row["history_json"])
-        except Exception:
-            return []
+        """Return the last MAX_MESSAGES messages for a session."""
+        return _run(_pg_get_history(session_id))
 
     def add_message(self, session_id: str, role: str, content: str):
-        """Append a message to the session history, keeping only the last 6."""
-        history = self.get_history(session_id)
-        history.append({"role": role, "content": content})
-        # Keep only last 12 messages (6 turns) to preserve enough cart/checkout context
-        if len(history) > 12:
-            history = history[-12:]
-
-        with get_conn() as conn:
-            conn.execute("""
-                INSERT INTO sessions (session_id, history_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    history_json = excluded.history_json,
-                    updated_at = excluded.updated_at
-            """, (session_id, json.dumps(history), datetime.utcnow().isoformat()))
+        """Append a message to the session history."""
+        _run(_pg_add_message(session_id, role, content))
 
     def clear(self, session_id: str):
-        """Clear session history (e.g., on new chat)."""
-        with get_conn() as conn:
-            conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        """Clear all messages for a session."""
+        _run(_pg_clear(session_id))
 
 
-redis_client = SQLiteSession()
+# Singleton — named redis_client for backward compat with existing import sites
+redis_client = SessionStore()

@@ -9,18 +9,18 @@ import json
 import uuid
 from contextvars import ContextVar
 from datetime import datetime
+
 from langchain_core.tools import tool
+
 from app.database.db import get_conn
 
 _current_user: ContextVar[str] = ContextVar("complaint_user", default="default")
 _current_session: ContextVar[str] = ContextVar("complaint_session", default="default")
 
-
 def set_complaint_context(user_id: str, session_id: str) -> None:
     """Bind user/session context before invoking the ComplaintAgent."""
     _current_user.set(user_id)
     _current_session.set(session_id)
-
 
 @tool
 def check_complaint_history(user_id: str = "") -> str:
@@ -49,7 +49,6 @@ def check_complaint_history(user_id: str = "") -> str:
         result["message"] = "No previous complaints or refunds found."
     return json.dumps(result)
 
-
 @tool
 def issue_auto_refund(order_id: str, amount: float, reason: str) -> str:
     """
@@ -69,7 +68,7 @@ def issue_auto_refund(order_id: str, amount: float, reason: str) -> str:
         return json.dumps({"action": "denied", "reason": f"Auto-refund limit is Rs.5000. Requested Rs.{amount} exceeds this limit. Please escalate."})
 
     clean_id = order_id.strip().lstrip("#").replace("ORD-", "").replace("ORD", "").lstrip("0") or "0"
-    
+
     with get_conn() as conn:
         # Check if already refunded
         existing_refund = conn.execute(
@@ -107,17 +106,17 @@ def issue_auto_refund(order_id: str, amount: float, reason: str) -> str:
         refund_id = f"REF-{uuid.uuid4().hex[:6].upper()}"
         created_at = datetime.utcnow().isoformat()
         db_order_id = f"ORD-{clean_id}" if conf else clean_id
-        
+
         conn.execute("""
             INSERT INTO refunds (refund_id, order_id, user_id, amount, reason, status, created_at)
             VALUES (?, ?, ?, ?, ?, 'Processing', ?)
         """, (refund_id, db_order_id, uid, amount, reason, created_at))
-        
+
         if row:
             conn.execute("UPDATE orders SET status = 'Refund Processing' WHERE order_id = ? AND user_id = ?", (clean_id, uid))
         if conf:
             conn.execute("UPDATE confirmed_orders SET status = 'Refund Processing' WHERE order_id = ? AND user_id = ?", (f"ORD-{clean_id}", uid))
-        
+
         conn.commit()
 
     return json.dumps({
@@ -128,7 +127,6 @@ def issue_auto_refund(order_id: str, amount: float, reason: str) -> str:
         "reason": reason,
         "status": "Processing — will reflect in 3-5 business days"
     })
-
 
 @tool
 def escalate_to_human(issue_summary: str, urgency: str = "HIGH") -> str:

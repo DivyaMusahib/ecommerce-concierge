@@ -4,12 +4,15 @@ Product Agent - LangChain ReAct Agent with tool calling + long-term memory.
 Handles: product search, details, comparison, filtering by price/category.
 Memory tools let the agent remember and recall user preferences (budget, brands, etc.)
 """
-from langchain_core.messages import SystemMessage
 from langgraph.prebuilt import create_react_agent
 
 from app.core.config import get_llm
-from app.tools.product_api import get_product_details, search_products, compare_products
-from app.tools.memory_tools import remember_user_preference, recall_user_preferences, forget_user_preference
+from app.tools.memory_tools import (
+    forget_user_preference,
+    recall_user_preferences,
+    remember_user_preference,
+)
+from app.tools.product_api import compare_products, get_product_details, search_products
 
 SYSTEM_PROMPT = """You are a specialized e-commerce Product Agent with long-term memory.
 

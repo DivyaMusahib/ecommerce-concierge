@@ -7,8 +7,12 @@ escalation to simulated human agent queue.
 from langgraph.prebuilt import create_react_agent
 
 from app.core.config import get_llm
-from app.tools.complaint_api import check_complaint_history, issue_auto_refund, escalate_to_human
-from app.tools.memory_tools import remember_user_preference, recall_user_preferences
+from app.tools.complaint_api import (
+    check_complaint_history,
+    escalate_to_human,
+    issue_auto_refund,
+)
+from app.tools.memory_tools import recall_user_preferences, remember_user_preference
 
 SYSTEM_PROMPT = """You are a specialized e-commerce Complaint & Escalation Agent with memory access. Your job is to handle customer frustration, complaints, and issues.
 

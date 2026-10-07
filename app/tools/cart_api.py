@@ -1,91 +1,120 @@
 """
-Cart / Checkout API - backed by SQLite via app/database/db.py.
-
-Thread-safe via SQLite WAL mode (works correctly across multiple workers).
-Session-scope: session_id injected via ContextVar before agent dispatch.
-
-Key security improvements:
-- Removed _latest_summaries in-memory dict; draft summaries are persisted in
-  the `draft_orders` SQLite table (safe for multi-worker deployments).
-- confirm_checkout recalculates subtotal/discount/tax server-side — the client
-  draft_summary is used only for the draft_order_id; all financial figures are
-  recomputed from DB state.
-- delivery_fee is accepted from the client but capped and stored explicitly —
-  the client total is never trusted directly.
-- Guest users (user_id == 'guest') are blocked from checkout.
-- Ambiguous product names return a structured error for the LLM to handle.
-- Shipping address check is enforced at checkout time.
-"""
+Cart / Checkout API — backed by PostgreSQL via app/database/engine.py."""
 import json
 import uuid
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timezone
+
 from langchain_core.tools import tool
+
 from app.database.db import get_conn
 
 _current_session: ContextVar[str] = ContextVar("current_session", default="default")
 _current_user: ContextVar[str] = ContextVar("current_cart_user", default="default")
 
-MAX_DELIVERY_FEE = 100  # Cap client-supplied delivery fee; frontend max is also ₹100
-
+MAX_DELIVERY_FEE = 100  # Cap client-supplied delivery fee
 
 def set_cart_session(session_id: str, user_id: str = "") -> None:
-    """Call this before invoking the CartAgent to scope operations to the correct session.
-    
-    IMPORTANT: This only sets the ContextVars — it does NOT delete the cart or drafts.
-    Draft cleanup happens only inside checkout() itself after confirmation.
-    """
+    """Call this before invoking the CartAgent to scope operations to the correct session."""
     _current_session.set(session_id)
     if user_id:
         _current_user.set(user_id)
 
-
 def _sid() -> str:
     return _current_session.get()
-
 
 def _uid() -> str:
     return _current_user.get()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal cart helpers — now using cart_items + cart_sessions tables
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _get_cart(session_id: str) -> dict:
+    """Return cart contents as {items: [...], coupon_code: str|None}."""
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM carts WHERE session_id = ?", (session_id,)).fetchone()
-    if not row:
-        return {"items": [], "coupon_code": None}
-    try:
-        items = json.loads(row["items_json"])
-    except Exception:
-        items = []
-    return {"items": items, "coupon_code": row["coupon_code"]}
+        # Fetch items joined with product prices
+        rows = conn.execute("""
+            SELECT ci.product_key, p.name, ci.quantity, p.price
+            FROM cart_items ci
+            JOIN products p ON p.product_key = ci.product_key
+            WHERE ci.session_id = ?
+        """, (session_id,)).fetchall()
 
+        cs = conn.execute(
+            "SELECT coupon_code FROM cart_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
 
-def _save_cart(session_id: str, items: list, coupon_code: str | None):
+    items = [
+        {
+            "product_key": r["product_key"],
+            "name": r["name"],
+            "price": r["price"],
+            "quantity": r["quantity"],
+        }
+        for r in rows
+    ]
+    return {"items": items, "coupon_code": cs["coupon_code"] if cs else None}
+
+def _ensure_cart_session(session_id: str, coupon_code: str | None = None) -> None:
     with get_conn() as conn:
         conn.execute("""
-            INSERT INTO carts (session_id, items_json, coupon_code, updated_at)
+            INSERT INTO cart_sessions (session_id, user_id, coupon_code, updated_at)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
-                items_json = excluded.items_json,
-                coupon_code = excluded.coupon_code,
-                updated_at = excluded.updated_at
-        """, (session_id, json.dumps(items), coupon_code, datetime.utcnow().isoformat()))
+                coupon_code = COALESCE(excluded.coupon_code, cart_sessions.coupon_code),
+                updated_at  = excluded.updated_at
+        """, (session_id, _uid(), coupon_code, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
 
-
-def _save_draft(session_id: str, summary: dict) -> None:
-    """Persist checkout draft to DB (replaces _latest_summaries dict)."""
+def _upsert_cart_item(session_id: str, product_key: str, quantity: int) -> None:
     with get_conn() as conn:
         conn.execute("""
-            INSERT INTO draft_orders (session_id, summary_json, created_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                summary_json = excluded.summary_json,
-                created_at = excluded.created_at
-        """, (session_id, json.dumps(summary), datetime.utcnow().isoformat()))
+            INSERT INTO cart_items (session_id, user_id, product_key, quantity, added_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, product_key) DO UPDATE SET
+                quantity = excluded.quantity
+        """, (session_id, _uid(), product_key, quantity, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
 
+def _delete_cart_item(session_id: str, product_key: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM cart_items WHERE session_id = ? AND product_key = ?",
+            (session_id, product_key)
+        )
+        conn.commit()
+
+def _set_cart_coupon(session_id: str, coupon_code: str | None) -> None:
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO cart_sessions (session_id, user_id, coupon_code, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                coupon_code = excluded.coupon_code,
+                updated_at  = excluded.updated_at
+        """, (session_id, _uid(), coupon_code, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Draft order helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _save_draft(session_id: str, order_id: str, summary: dict) -> None:
+    """Persist checkout draft to DB."""
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO draft_orders (session_id, order_id, summary_json, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                order_id     = excluded.order_id,
+                summary_json = excluded.summary_json,
+                created_at   = excluded.created_at
+        """, (session_id, order_id, json.dumps(summary), datetime.now(timezone.utc).isoformat()))
+        conn.commit()
 
 def get_latest_checkout_summary(session_id: str) -> dict | None:
-    """Retrieve persisted draft summary from DB (replaces _latest_summaries.get)."""
+    """Retrieve persisted draft summary from DB."""
     with get_conn() as conn:
         row = conn.execute(
             "SELECT summary_json FROM draft_orders WHERE session_id = ?", (session_id,)
@@ -97,6 +126,9 @@ def get_latest_checkout_summary(session_id: str) -> dict | None:
     except Exception:
         return None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LangChain Tools
+# ─────────────────────────────────────────────────────────────────────────────
 
 @tool
 def add_to_cart(product_name: str, quantity: int = 1) -> str:
@@ -108,14 +140,13 @@ def add_to_cart(product_name: str, quantity: int = 1) -> str:
     if quantity <= 0:
         return json.dumps({"error": "Quantity must be greater than 0."})
 
-    from app.tools.product_api import _fuzzy_match, _format_product
+    from app.tools.product_api import _format_product, _fuzzy_match
     match = _fuzzy_match(product_name)
 
     if match is None:
         return json.dumps({"error": f"Product '{product_name}' not found in catalog.",
                           "suggestion": "Try searching with a different name or check available products."})
 
-    # Ambiguous: MUST stop and ask user — do NOT add any item
     if isinstance(match, list):
         return json.dumps({
             "action": "STOP_AND_ASK_USER",
@@ -131,45 +162,38 @@ def add_to_cart(product_name: str, quantity: int = 1) -> str:
 
     key = row["product_key"]
     sid = _sid()
-    cart = _get_cart(sid)
-    items = cart["items"]
 
-    for item in items:
+    # Check if already in cart
+    cart = _get_cart(sid)
+    for item in cart["items"]:
         if item["product_key"] == key:
-            item["quantity"] += quantity
-            _save_cart(sid, items, cart["coupon_code"])
+            new_qty = item["quantity"] + quantity
+            _upsert_cart_item(sid, key, new_qty)
             return json.dumps({
                 "action": "updated_quantity",
                 "product": product["name"],
-                "new_quantity": item["quantity"],
-                "cart_size": len(items),
+                "new_quantity": new_qty,
+                "cart_size": len(cart["items"]),
             })
 
-    items.append({
-        "product_key": key,
-        "name": product["name"],
-        "price": product["raw_price"],  # Always store as integer, not formatted string
-        "quantity": quantity,
-        "idempotency_key": str(uuid.uuid4())[:8],
-    })
-    _save_cart(sid, items, cart["coupon_code"])
+    _ensure_cart_session(sid)
+    _upsert_cart_item(sid, key, quantity)
     return json.dumps({
         "action": "added",
         "product": product["name"],
         "quantity": quantity,
-        "cart_size": len(items),
+        "cart_size": len(cart["items"]) + 1,
     })
-
 
 @tool
 def remove_from_cart(product_name: str, quantity: int = 1) -> str:
     """Remove a product from the user's cart by name. Will decrement quantity if available."""
     from app.tools.product_api import _fuzzy_match
-    
+
     sid = _sid()
     cart = _get_cart(sid)
     items = cart["items"]
-    
+
     match = _fuzzy_match(product_name)
     if not match:
         return json.dumps({"error": f"Product '{product_name}' not found."})
@@ -178,22 +202,22 @@ def remove_from_cart(product_name: str, quantity: int = 1) -> str:
             "error": "Ambiguous product — multiple matches found.",
             "message": f"I found {len(match)} products matching '{product_name}'. Please be more specific."
         })
-        
+
     key = match["product_key"]
 
-    for i, item in enumerate(items):
+    for item in items:
         if item["product_key"] == key:
             if item["quantity"] > quantity:
-                item["quantity"] -= quantity
-                _save_cart(sid, items, cart["coupon_code"])
-                return json.dumps({"action": "decremented", "product": item["name"], "new_quantity": item["quantity"], "cart_size": len(items)})
+                new_qty = item["quantity"] - quantity
+                _upsert_cart_item(sid, key, new_qty)
+                return json.dumps({"action": "decremented", "product": item["name"],
+                                   "new_quantity": new_qty, "cart_size": len(items)})
             else:
-                removed = items.pop(i)
-                _save_cart(sid, items, cart["coupon_code"])
-                return json.dumps({"action": "removed", "product": removed["name"], "cart_size": len(items)})
+                _delete_cart_item(sid, key)
+                return json.dumps({"action": "removed", "product": item["name"],
+                                   "cart_size": len(items) - 1})
 
     return json.dumps({"error": f"'{match['name']}' is not in your cart."})
-
 
 @tool
 def get_cart() -> str:
@@ -217,7 +241,6 @@ def get_cart() -> str:
         "total": round(subtotal - discount, 2),
     })
 
-
 @tool
 def apply_coupon_to_cart(coupon_code: str) -> str:
     """Apply a coupon/discount code to the current cart. Validates the code first."""
@@ -236,19 +259,13 @@ def apply_coupon_to_cart(coupon_code: str) -> str:
 
     subtotal = sum(int(item["price"]) * int(item["quantity"]) for item in items)
 
-    # NEWUSER check — must have no prior orders in EITHER table
     if code == "NEWUSER":
         with get_conn() as conn:
             user_id = _uid()
-            # Check confirmed_orders (checkout flow)
-            prev_confirmed = conn.execute(
-                "SELECT 1 FROM confirmed_orders WHERE user_id = ? LIMIT 1", (user_id,)
-            ).fetchone()
-            # Also check the orders table (demo/tracking orders)
-            prev_orders = conn.execute(
+            prev = conn.execute(
                 "SELECT 1 FROM orders WHERE user_id = ? LIMIT 1", (user_id,)
             ).fetchone()
-            if prev_confirmed or prev_orders:
+            if prev:
                 return json.dumps({"error": "Coupon 'NEWUSER' is only valid for first-time customers."})
 
     if subtotal < coupon["min_order"]:
@@ -257,9 +274,8 @@ def apply_coupon_to_cart(coupon_code: str) -> str:
                      f"Your subtotal is Rs.{subtotal}."
         })
 
-    _save_cart(sid, items, code)
+    _set_cart_coupon(sid, code)
     return json.dumps({"action": "coupon_applied", "code": code, "description": coupon["description"]})
-
 
 @tool
 def check_shipping_address() -> str:
@@ -268,7 +284,7 @@ def check_shipping_address() -> str:
     Returns the address if it exists, or prompts the user to provide one.
     """
     uid = _uid()
-    if uid == "guest":
+    if uid in ("guest", "default") or uid.startswith("anon_"):
         return json.dumps({"error": "Please sign in to manage your shipping address."})
 
     with get_conn() as conn:
@@ -285,7 +301,6 @@ def check_shipping_address() -> str:
 
     return json.dumps({"has_address": True, "shipping_address": row["shipping_address"]})
 
-
 @tool
 def save_shipping_address(address: str) -> str:
     """
@@ -293,7 +308,7 @@ def save_shipping_address(address: str) -> str:
     The address should include street, city, state, and PIN code.
     """
     uid = _uid()
-    if uid == "guest":
+    if uid in ("guest", "default") or uid.startswith("anon_"):
         return json.dumps({"error": "Please sign in to save a shipping address."})
 
     address = address.strip()
@@ -308,7 +323,6 @@ def save_shipping_address(address: str) -> str:
 
     return json.dumps({"action": "address_saved", "shipping_address": address})
 
-
 @tool
 def checkout() -> str:
     """
@@ -322,7 +336,7 @@ def checkout() -> str:
     uid = _uid()
 
     # Guest restriction
-    if uid == "guest":
+    if uid in ("guest", "default") or uid.startswith("anon_"):
         return json.dumps({
             "error": "guest_restricted",
             "message": "You need to sign in or create an account before checking out. "
@@ -356,52 +370,46 @@ def checkout() -> str:
     total = round(subtotal - discount + tax, 2)
     order_id = f"ORD-{uuid.uuid4().hex[:6].upper()}"
 
-    summary_data = {
-        "checkout_summary": {
-            "items": [
-                {
-                    "product_key": i.get("product_key", ""),
-                    "name": i["name"],
-                    "qty": i["quantity"],
-                    "price": i["price"],
-                }
-                for i in items
-            ],
-            "subtotal": subtotal,
-            "discount": discount,
-            "tax": tax,
-            "total": total,
-            "coupon": coupon_code,
-            "draft_order_id": order_id,
-            "shipping_address": user_row["shipping_address"],
-        },
-        "confirmation_required": True,
-        "message": f"Your order total is Rs.{total}. Please confirm to place this order.",
+    summary = {
+        "items": [
+            {
+                "product_key": i["product_key"],
+                "name": i["name"],
+                "qty": i["quantity"],
+                "price": i["price"],
+            }
+            for i in items
+        ],
+        "subtotal": subtotal,
+        "discount": discount,
+        "tax": tax,
+        "total": total,
+        "coupon": coupon_code,
+        "draft_order_id": order_id,
+        "shipping_address": user_row["shipping_address"],
     }
 
-    # Persist to DB instead of in-memory dict
-    _save_draft(sid, summary_data["checkout_summary"])
+    _save_draft(sid, order_id, summary)
 
-    return json.dumps(summary_data)
-
+    return json.dumps({
+        "checkout_summary": summary,
+        "confirmation_required": True,
+        "message": f"Your order total is Rs.{total}. Please confirm to place this order.",
+    })
 
 def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, delivery_fee: float = 0) -> dict:
     """
-    Actually place the order: write to confirmed_orders table and clear the cart.
-    Called by the API route after user clicks Confirm in the UI.
+    Actually place the order: write to orders + order_items tables in a single
+    transaction and clear the cart.
 
     SECURITY: All financial totals are recalculated server-side from DB state.
-    The client-supplied draft_summary is used only to recover the draft_order_id.
-    The delivery_fee is accepted from the client but capped at MAX_DELIVERY_FEE.
     """
-    # Guest restriction
-    if user_id == "guest":
+    if user_id in ("guest", "default") or user_id.startswith("anon_"):
         raise ValueError("Guest users cannot place orders. Please sign in.")
 
-    # Retrieve and validate the draft from DB (not from the client payload)
+    # Retrieve and validate the draft from DB
     db_draft = get_latest_checkout_summary(session_id)
     if not db_draft:
-        # Fallback: recalculate from live cart if draft expired
         cart = _get_cart(session_id)
         items = cart["items"]
         coupon_code = cart.get("coupon_code")
@@ -413,7 +421,6 @@ def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, deliver
 
     # Recalculate totals server-side from live product prices
     with get_conn() as conn:
-        # Rebuild items with current DB prices to prevent price spoofing
         verified_items = []
         for item in items:
             pkey = item.get("product_key")
@@ -430,7 +437,6 @@ def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, deliver
                         "price": db_item["price"],
                     })
             else:
-                # No product_key — keep the stored price but don't trust client total
                 verified_items.append(item)
 
     if not verified_items:
@@ -439,33 +445,34 @@ def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, deliver
     subtotal = sum(int(i["price"]) * int(i.get("qty", i.get("quantity", 1))) for i in verified_items)
     tax = round(subtotal * 0.08, 2)
     discount = _calc_discount(coupon_code, subtotal)
-
-    # Cap delivery_fee to MAX_DELIVERY_FEE — never trust client total
     safe_delivery_fee = max(0.0, min(float(delivery_fee or 0), MAX_DELIVERY_FEE))
     total = round(subtotal - discount + tax + safe_delivery_fee, 2)
-
-    placed_at = datetime.utcnow().isoformat()
+    placed_at = datetime.now(timezone.utc).isoformat()
 
     with get_conn() as conn:
         try:
+            # Write order header
             conn.execute("""
-                INSERT INTO confirmed_orders
-                (order_id, session_id, user_id, items_json, subtotal, discount, tax, delivery_fee, total,
-                 coupon_code, placed_at, status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                order_id, session_id, user_id,
-                json.dumps(verified_items),
-                subtotal, discount, tax, safe_delivery_fee, total,
-                coupon_code, placed_at,
-                "On the way",
-            ))
-            # Clear the cart
-            conn.execute("DELETE FROM carts WHERE session_id = ?", (session_id,))
-            # Clear the draft
+                INSERT INTO orders
+                (order_id, user_id, status, subtotal, discount, tax, delivery_fee, total, coupon_code, placed_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, (order_id, user_id, "On the way", subtotal, discount, tax,
+                  safe_delivery_fee, total, coupon_code, placed_at))
+
+            # Write order items
+            for item in verified_items:
+                conn.execute("""
+                    INSERT INTO order_items (order_id, product_key, name, price, quantity)
+                    VALUES (?,?,?,?,?)
+                """, (order_id, item.get("product_key"), item["name"],
+                      item["price"], item.get("qty", 1)))
+
+            # Clear cart items + session
+            conn.execute("DELETE FROM cart_items WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM cart_sessions WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM draft_orders WHERE session_id = ?", (session_id,))
 
-            # Deduct stock using verified DB quantities
+            # Deduct stock
             for item in verified_items:
                 pkey = item.get("product_key")
                 qty = item.get("qty", 1)
@@ -478,8 +485,6 @@ def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, deliver
             conn.commit()
         except Exception as e:
             if "UNIQUE constraint failed" in str(e):
-                # Order already placed (idempotent double-submit) — return a clear signal
-                # rather than silently returning freshly computed totals for a no-op write.
                 return {
                     "order_id": order_id,
                     "status": "already_confirmed",
@@ -500,7 +505,6 @@ def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, deliver
         "status": "confirmed",
     }
 
-
 def _calc_discount(coupon_code: str | None, subtotal: float) -> float:
     if not coupon_code:
         return 0
@@ -510,4 +514,9 @@ def _calc_discount(coupon_code: str | None, subtotal: float) -> float:
         return 0
     if subtotal < c["min_order"]:
         return 0
-    return round(subtotal * c["value"] / 100, 2) if c["type"] == "percent" else float(c["value"])
+    if c["type"] == "percent":
+        raw = round(subtotal * c["value"] / 100, 2)
+        # Respect max_discount cap if set
+        cap = c.get("max_discount", 0)
+        return min(raw, cap) if cap > 0 else raw
+    return float(c["value"])

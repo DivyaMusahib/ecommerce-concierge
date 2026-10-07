@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env.local
+.env.*.local
+
+# Secrets — NEVER in image
+.env
+
+# Data and caches
+data/*.db
+data/chroma_db/
+*.db-shm
+*.db-wal
+
+# Node / Frontend build
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+smoke_test.py
+tests/
+pytest.ini
+.pytest_cache/
+
+# Logs
+*.log
+logs/
