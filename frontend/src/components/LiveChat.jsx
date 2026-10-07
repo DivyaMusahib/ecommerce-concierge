@@ -115,7 +115,14 @@ function MemoryPanel({ userId, refreshKey }) {
           )}
         </>
       )}
-      <div className="text-[8px] text-gray-200 mt-2">SQLite · Persistent</div>
+      {profile.shipping_address ? (
+        <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">
+          <div className="text-[8px] font-bold text-gray-300 uppercase tracking-wide mb-0.5">📍 Saved Address</div>
+          <div className="text-[9px] text-gray-500 dark:text-gray-400 leading-snug break-words">{profile.shipping_address}</div>
+        </div>
+      ) : (
+        <div className="text-[8px] text-gray-300 mt-2 italic">No shipping address saved</div>
+      )}
     </div>
   );
 }

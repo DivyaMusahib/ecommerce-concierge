@@ -92,6 +92,14 @@ def rule_based_classify(message: str) -> IntentResult | None:
         if id_match:
             entities["order_id"] = id_match.group(1)
 
+    # "show me all my orders", "my order history", "what are my orders"
+    if re.search(r'\b(all\s+(my\s+)?orders|my\s+orders|order\s+history|past\s+(purchases?|orders?)|all\s+orders)\b', msg):
+        intents.append("ORDER_TRACKING")
+
+    # "what is my address", "show my address"
+    if re.search(r'\b(my\s+address|shipping\s+address|saved\s+address|delivery\s+address)\b', msg):
+        intents.append("ORDER_TRACKING")
+
     # ── PRODUCT_INQUIRY ─────────────────────────────────────────────────────
     product_keywords = r'\b(price|cost|how much|stock|in stock|details|specs|compare|comparison|rating|review|reviews|tell me about|show me|laptops|under|available)\b'
     known_products = [

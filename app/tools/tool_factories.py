@@ -216,8 +216,10 @@ def build_cart_tools(ctx: RequestContext) -> list:
         if len(address) < 10:
             return json.dumps({"error": "Please provide a complete address (street, city, state, PIN)."})
         with _get_conn() as conn:
-            conn.execute("UPDATE users SET shipping_address = ? WHERE user_id = ?",
-                         (address, ctx.user_id))
+            conn.execute(
+                "UPDATE users SET shipping_address = ?, updated_at = NOW() WHERE user_id = ?",
+                (address, ctx.user_id)
+            )
             conn.commit()
         return json.dumps({"action": "address_saved", "shipping_address": address})
 
@@ -290,7 +292,7 @@ def build_memory_tools(ctx: RequestContext) -> list:
 
     @tool
     def recall_user_preferences() -> str:
-        """Retrieve all long-term preferences and profile info saved for this user."""
+        """Retrieve all long-term preferences and profile info saved for this user, including name and shipping address."""
         if ctx.is_guest:
             return "Guest user — no long-term memory. Rely on current chat history for context."
         from app.memory.long_term import get_user_profile
@@ -298,10 +300,13 @@ def build_memory_tools(ctx: RequestContext) -> list:
         if not profile:
             return "No memory found for this user yet."
         prefs = profile.get("preferences", {})
-        if not prefs:
-            return f"User profile: name={profile.get('name')}. No preferences saved yet."
-        pref_lines = "\n".join(f"  - {k}: {v}" for k, v in prefs.items())
-        return f"User: {profile.get('name')}\nSaved preferences:\n{pref_lines}"
+        shipping = profile.get("shipping_address", "") or "Not saved yet"
+        pref_lines = "\n".join(f"  - {k}: {v}" for k, v in prefs.items()) if prefs else "  (none)"
+        return (
+            f"User: {profile.get('name')}\n"
+            f"Shipping address: {shipping}\n"
+            f"Saved preferences:\n{pref_lines}"
+        )
 
     @tool
     def forget_user_preference(key: str) -> str:
@@ -323,20 +328,27 @@ def build_order_tools(ctx: RequestContext) -> list:
 
     @tool
     def get_order_status(order_id: str) -> str:
-        """Look up status, tracking info, and timeline for a customer order."""
+        """Look up status, tracking info, and timeline for a specific customer order by ID."""
         clean_id = (order_id.strip().lstrip("#")
                     .replace("ORD-", "").replace("ORD", "").lstrip("0") or "0")
 
         with _get_conn() as conn:
+            # First try current user's orders
             row = (conn.execute("SELECT * FROM orders WHERE order_id = ? AND user_id = ?",
                                 (clean_id, ctx.user_id)).fetchone() or
                    conn.execute("SELECT * FROM orders WHERE order_id = ? AND user_id = ?",
                                 (f"ORD-{clean_id}", ctx.user_id)).fetchone() or
                    conn.execute("SELECT * FROM orders WHERE order_id LIKE ? AND user_id = ?",
                                 (f"%{clean_id}%", ctx.user_id)).fetchone())
+
+            # Fallback: allow access to demo orders (user_1) for any user
+            if not row and clean_id in ("123", "456", "999"):
+                row = conn.execute("SELECT * FROM orders WHERE order_id = ? AND user_id = 'user_1'",
+                                   (clean_id,)).fetchone()
+
             if not row:
                 return json.dumps({"error": f"Order '{order_id}' not found.",
-                                   "suggestion": "Valid demo orders: 123, 456, 999."})
+                                   "suggestion": "Demo orders: 123, 456, 999. Or use get_my_orders to see all your placed orders."})
 
             oid = row["order_id"]
             items_rows = conn.execute(
@@ -358,6 +370,33 @@ def build_order_tools(ctx: RequestContext) -> list:
             "timeline": [{"step": r["step"], "time": r["occurred_at"], "done": bool(r["completed"])}
                          for r in timeline_rows],
         })
+
+    @tool
+    def get_my_orders() -> str:
+        """Retrieve all orders placed by the current user. Use this when the user asks to see their orders, order history, or past purchases."""
+        if ctx.is_guest:
+            return json.dumps({"error": "Please sign in to view your order history."})
+        with _get_conn() as conn:
+            rows = conn.execute(
+                "SELECT order_id, status, total, placed_at, coupon_code FROM orders WHERE user_id = ? ORDER BY placed_at DESC",
+                (ctx.user_id,)
+            ).fetchall()
+        if not rows:
+            return json.dumps({"orders": [], "message": "You have no orders yet."})
+        orders = []
+        for r in rows:
+            with _get_conn() as conn:
+                items_rows = conn.execute(
+                    "SELECT name, price, quantity FROM order_items WHERE order_id = ?", (r["order_id"],)
+                ).fetchall()
+            orders.append({
+                "order_id": r["order_id"],
+                "status": r["status"],
+                "total": r["total"],
+                "placed_at": str(r["placed_at"]),
+                "items": [{"name": i["name"], "qty": i["quantity"]} for i in items_rows],
+            })
+        return json.dumps({"orders": orders, "count": len(orders)})
 
     @tool
     def cancel_order(order_id: str) -> str:
@@ -383,7 +422,7 @@ def build_order_tools(ctx: RequestContext) -> list:
         return json.dumps({"action": "cancelled", "order_id": row["order_id"], "status": "Cancelled",
                            "message": f"Order {row['order_id']} cancelled. Refund within 5-7 business days."})
 
-    return [get_order_status, cancel_order]
+    return [get_order_status, get_my_orders, cancel_order]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Complaint Tools Factory

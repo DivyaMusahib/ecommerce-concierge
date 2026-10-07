@@ -19,8 +19,9 @@ _DIR = os.path.dirname(__file__)
 _FAQ_PATH = os.path.join(_DIR, "..", "..", "data", "faq.md")
 _INDEX_PATH = os.path.join(_DIR, "..", "..", "data", "faq_faiss_index_gemini")
 
-# Gemini embeddings
-_EMBEDDING_MODEL = "models/text-embedding-005"
+# Gemini embeddings — text-embedding-004 is the latest stable model supported
+# on the v1beta API endpoint used by langchain-google-genai
+_EMBEDDING_MODEL = "models/text-embedding-004"
 
 vector_store = None
 _embeddings = None

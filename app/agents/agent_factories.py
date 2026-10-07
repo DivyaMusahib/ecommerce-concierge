@@ -66,12 +66,18 @@ SHIPPING ADDRESS RULES:
 - If no address saved (has_address=false), ask the user for their full delivery address.
 - Once they provide it, call save_shipping_address, then proceed to checkout.
 
-AMBIGUOUS PRODUCT RULES (CRITICAL):
+AMBIGUOUS PRODUCT RULES — HUMAN IN THE LOOP (CRITICAL — NEVER VIOLATE):
 - If add_to_cart returns "action": "STOP_AND_ASK_USER":
-  1. IMMEDIATELY STOP — do NOT call add_to_cart again.
-  2. Show a NUMBERED LIST of matches with names and prices.
-  3. Ask: "Which one would you like to add?"
-  4. When user replies with a NUMBER, map it to the FULL product name before calling add_to_cart.
+  1. IMMEDIATELY STOP — do NOT call add_to_cart again for any match.
+  2. Present a NUMBERED LIST of matches with names and prices. KEEP THIS LIST IN MIND.
+  3. Ask: "Which one would you like to add? Reply with the number or full name."
+  4. WAIT for the user's explicit reply before taking any action.
+  5. When the user replies with a NUMBER (e.g. "1", "2", "3"):
+     - Map that number to the FULL product name from YOUR PREVIOUS numbered list.
+     - Example: if your list was "1. Apple iPhone 18 Pro" and user says "1", call add_to_cart("Apple iPhone 18 Pro").
+     - NEVER pass the number itself to add_to_cart. NEVER add option 1 by default.
+  6. When user says "Yes" after seeing options, treat it as confirmation of the last specific
+     product they mentioned — ask them to clarify which number if ambiguous.
 
 GUEST RESTRICTION:
 - If checkout returns "guest_restricted", call get_cart to show cart contents, then
@@ -90,15 +96,18 @@ ANTI-HALLUCINATION RULES (CRITICAL):
 _ORDER_PROMPT = """You are a specialized e-commerce Order Management Agent.
 
 Your job is to help users with:
-- Checking order status and tracking information
-- Cancelling orders (when eligible)
+- Viewing their complete order history (use get_my_orders)
+- Checking a specific order's status and tracking info (use get_order_status)
+- Cancelling orders (when eligible, use cancel_order)
 - Explaining order timelines and delivery estimates
+- Answering questions about their shipping address or profile
 
 RULES:
-- ALWAYS use get_order_status to look up order data. Never guess or invent status.
-- For cancellation, use cancel_order. Only orders not yet delivered can be cancelled.
-- Demo orders: 123, 456, 999. User may also have orders from checkout (ORD-XXXXXX format).
-- If user provides order ID like #123 or ORD-123, strip the prefix and try both formats.
+- When user asks "show my orders", "what are my orders", "order history", "all orders" → call get_my_orders.
+- For a specific order ID → call get_order_status with the ID.
+- For cancellation: use cancel_order. Only orders not yet delivered can be cancelled.
+- Demo orders (123, 456, 999) are visible to all users. User-placed orders use ORD-XXXXXX format.
+- When user asks "what is my address", "what address do I have saved", etc. → call recall_user_preferences to get their saved shipping address and name.
 - Be empathetic and clear about delivery timelines."""
 
 _COMPLAINT_PROMPT = """You are a specialized e-commerce Complaint & Escalation Agent.
@@ -163,8 +172,8 @@ def build_cart_agent(ctx: RequestContext):
     return create_react_agent(model=_llm, tools=tools, prompt=_CART_PROMPT)
 
 def build_order_agent(ctx: RequestContext):
-    """Build an order agent with order tools bound to this request's context."""
-    tools = build_order_tools(ctx)
+    """Build an order agent with order tools + memory tools bound to this request's context."""
+    tools = build_order_tools(ctx) + build_memory_tools(ctx)
     return create_react_agent(model=_llm, tools=tools, prompt=_ORDER_PROMPT)
 
 def build_complaint_agent(ctx: RequestContext):
@@ -173,8 +182,9 @@ def build_complaint_agent(ctx: RequestContext):
     return create_react_agent(model=_llm, tools=tools, prompt=_COMPLAINT_PROMPT)
 
 def build_faq_agent(ctx: RequestContext):
-    """Build a stateless FAQ agent (no tools needed)."""
-    return create_react_agent(model=_llm, tools=[], prompt=_FAQ_PROMPT)
+    """Build an FAQ agent with RAG search tool."""
+    from app.tools.faq_retrieval import search_faq
+    return create_react_agent(model=_llm, tools=[search_faq], prompt=_FAQ_PROMPT)
 
 def build_deals_agent(ctx: RequestContext):
     """Build a deals agent with stateless price/coupon tools."""
