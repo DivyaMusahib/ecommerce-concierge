@@ -263,7 +263,7 @@ def build_cart_tools(ctx: RequestContext) -> list:
         with _get_conn() as conn:
             conn.execute("""
                 INSERT INTO draft_orders (session_id, order_id, summary_json, created_at)
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?::jsonb, ?)
                 ON CONFLICT(session_id) DO UPDATE SET order_id=excluded.order_id,
                     summary_json=excluded.summary_json, created_at=excluded.created_at
             """, (ctx.session_id, order_id, json.dumps(summary), datetime.now(timezone.utc).isoformat()))

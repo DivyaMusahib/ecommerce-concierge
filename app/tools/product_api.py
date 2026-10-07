@@ -166,7 +166,7 @@ def _format_product(row: dict) -> dict:
     try:
         with get_conn() as conn:
             offer_rows = conn.execute(
-                "SELECT offer_text FROM product_offers WHERE product_key = ? AND active = 1",
+                "SELECT offer_text FROM product_offers WHERE product_key = ? AND active = TRUE",
                 (row.get("product_key", ""),)
             ).fetchall()
         offers = [r[0] for r in offer_rows]
@@ -234,10 +234,10 @@ def search_products(category: str = "", max_price: int = 0, keyword: str = "") -
         conditions = []
         params = {}
         if category:
-            conditions.append("LOWER(p.category) LIKE :cat")
+            conditions.append("LOWER(p.category) LIKE %(cat)s")
             params["cat"] = f"%{category.lower()}%"
         if max_price > 0:
-            conditions.append("p.price <= :max_price")
+            conditions.append("p.price <= %(max_price)s")
             params["max_price"] = max_price
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""

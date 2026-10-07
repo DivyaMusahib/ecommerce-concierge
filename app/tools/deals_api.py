@@ -84,7 +84,7 @@ def check_coupon(coupon_code: str) -> str:
     code = coupon_code.upper().strip()
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM coupons WHERE code = ? AND active = 1", (code,)
+            "SELECT * FROM coupons WHERE code = ? AND active = TRUE", (code,)
         ).fetchone()
 
     if row:
@@ -103,6 +103,6 @@ def get_coupon_by_code(code: str) -> dict | None:
     """Internal helper: get a coupon dict by code (used by cart_api)."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM coupons WHERE code = ? AND active = 1", (code.upper(),)
+            "SELECT * FROM coupons WHERE code = ? AND active = TRUE", (code.upper(),)
         ).fetchone()
     return dict(row) if row else None

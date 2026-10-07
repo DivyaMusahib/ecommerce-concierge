@@ -105,7 +105,7 @@ def _save_draft(session_id: str, order_id: str, summary: dict) -> None:
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO draft_orders (session_id, order_id, summary_json, created_at)
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?::jsonb, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 order_id     = excluded.order_id,
                 summary_json = excluded.summary_json,
@@ -484,7 +484,8 @@ def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, deliver
 
             conn.commit()
         except Exception as e:
-            if "UNIQUE constraint failed" in str(e):
+            err_str = str(e).lower()
+            if "unique constraint failed" in err_str or "duplicate key value violates unique constraint" in err_str:
                 return {
                     "order_id": order_id,
                     "status": "already_confirmed",
