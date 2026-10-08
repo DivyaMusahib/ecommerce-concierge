@@ -501,7 +501,7 @@ def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, deliver
                 qty = item.get("qty", 1)
                 if pkey:
                     conn.execute(
-                        "UPDATE products SET stock = MAX(0, stock - ?) WHERE product_key = ?",
+                        "UPDATE products SET stock = GREATEST(0, stock - ?) WHERE product_key = ?",
                         (qty, pkey)
                     )
 
