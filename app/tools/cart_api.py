@@ -122,7 +122,12 @@ def get_latest_checkout_summary(session_id: str) -> dict | None:
     if not row:
         return None
     try:
-        return json.loads(row["summary_json"])
+        raw = row["summary_json"]
+        # psycopg2 with RealDictCursor auto-deserializes JSONB → Python dict.
+        # json.loads() would raise TypeError on a dict, causing a silent None return.
+        if isinstance(raw, dict):
+            return raw
+        return json.loads(raw)
     except Exception:
         return None
 
