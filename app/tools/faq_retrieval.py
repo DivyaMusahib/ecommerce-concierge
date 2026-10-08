@@ -19,8 +19,8 @@ _DIR = os.path.dirname(__file__)
 _FAQ_PATH = os.path.join(_DIR, "..", "..", "data", "faq.md")
 _INDEX_PATH = os.path.join(_DIR, "..", "..", "data", "faq_faiss_index_gemini")
 
-# Gemini embeddings — text-embedding-004 is the current stable model
-_EMBEDDING_MODEL = "models/text-embedding-004"
+# Gemini embeddings
+_EMBEDDING_MODEL = "models/gemini-embedding-2"
 
 vector_store = None
 _embeddings = None
