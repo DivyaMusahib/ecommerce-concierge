@@ -78,7 +78,7 @@ async def memory_node(state: SupervisorState) -> dict:
         )
 
     history_str = " | ".join(
-        f"{m['role']}: {m['content'][:80]}" for m in history
+        f"{m['role']}: {m['content'][:300]}" for m in history
     ) if history else "No prior context"
 
     augmented = (
