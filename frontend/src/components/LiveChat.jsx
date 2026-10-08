@@ -514,20 +514,25 @@ export function LiveChat({ prefill, setPrefill }) {
                           <div className="text-[12px] text-gray-600 dark:text-gray-300 mb-3 space-y-1">
                             {(pendingConfirm.summary.items || []).map((item, idx2) => (
                               <div key={idx2} className="flex justify-between">
-                                <span>{item.name} ×{item.qty}</span><span>₹{item.price}</span>
+                                <span>{item.name} ×{item.qty}</span><span>₹{Number(item.price).toLocaleString('en-IN')}</span>
                               </div>
                             ))}
                             {pendingConfirm.summary.discount > 0 && (
                               <div className="flex justify-between text-green-600">
-                                <span>Discount</span><span>-₹{pendingConfirm.summary.discount}</span>
+                                <span>Discount</span><span>-₹{Number(pendingConfirm.summary.discount).toLocaleString('en-IN')}</span>
                               </div>
                             )}
                             <div className="flex justify-between text-gray-500 dark:text-gray-400">
-                              <span>Tax (8%)</span><span>₹{pendingConfirm.summary.tax}</span>
+                              <span>Tax (8%)</span><span>₹{Number(pendingConfirm.summary.tax).toLocaleString('en-IN')}</span>
                             </div>
                             <div className="border-t border-purple-100 mt-2 pt-2 font-bold flex justify-between text-purple-700">
-                              <span>Total</span><span>₹{pendingConfirm.summary.total}</span>
+                              <span>Total</span><span>₹{Number(pendingConfirm.summary.total).toLocaleString('en-IN')}</span>
                             </div>
+                            {pendingConfirm.summary.shipping_address && (
+                              <div className="mt-2 pt-2 border-t border-purple-100 text-[11px] text-gray-500 dark:text-gray-400">
+                                📍 {pendingConfirm.summary.shipping_address}
+                              </div>
+                            )}
                           </div>
                         )}
                         <div className="flex gap-2 flex-col">

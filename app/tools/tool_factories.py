@@ -271,8 +271,24 @@ def build_cart_tools(ctx: RequestContext) -> list:
         return json.dumps({"checkout_summary": summary, "confirmation_required": True,
                            "message": f"Your order total is Rs.{total}. Please confirm to place this order."})
 
+    @tool
+    def confirm_order() -> str:
+        """
+        Confirm and place the pending order after the user agrees to the checkout summary.
+        Call this ONLY after the user has reviewed and explicitly confirmed the checkout.
+        """
+        from app.tools.cart_api import get_latest_checkout_summary, confirm_checkout
+        db_draft = get_latest_checkout_summary(ctx.session_id)
+        if not db_draft:
+            return json.dumps({"error": "No pending checkout found. Please run checkout first."})
+        try:
+            res = confirm_checkout(ctx.session_id, ctx.user_id, db_draft)
+            return json.dumps({"action": "order_placed", "order_id": res["order_id"], "status": res["status"]})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     return [add_to_cart, remove_from_cart, get_cart, apply_coupon_to_cart,
-            checkout, check_shipping_address, save_shipping_address]
+            checkout, confirm_order, check_shipping_address, save_shipping_address]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Memory Tools Factory
@@ -383,18 +399,27 @@ def build_order_tools(ctx: RequestContext) -> list:
             ).fetchall()
         if not rows:
             return json.dumps({"orders": [], "message": "You have no orders yet."})
+        order_ids = [r["order_id"] for r in rows]
+        # Batch-fetch all order items in one query (avoids N+1 connections)
+        placeholders = ", ".join(["%s"] * len(order_ids))
+        with _get_conn() as conn:
+            all_items = conn.execute(
+                f"SELECT order_id, name, price, quantity FROM order_items WHERE order_id IN ({placeholders})",
+                tuple(order_ids)
+            ).fetchall()
+        items_by_order: dict = {}
+        for item in all_items:
+            items_by_order.setdefault(item["order_id"], []).append(item)
         orders = []
         for r in rows:
-            with _get_conn() as conn:
-                items_rows = conn.execute(
-                    "SELECT name, price, quantity FROM order_items WHERE order_id = ?", (r["order_id"],)
-                ).fetchall()
+            oid = r["order_id"]
+            order_items = items_by_order.get(oid, [])
             orders.append({
-                "order_id": r["order_id"],
+                "order_id": oid,
                 "status": r["status"],
                 "total": r["total"],
                 "placed_at": str(r["placed_at"]),
-                "items": [{"name": i["name"], "qty": i["quantity"]} for i in items_rows],
+                "items": [{"name": i["name"], "qty": i["quantity"]} for i in order_items],
             })
         return json.dumps({"orders": orders, "count": len(orders)})
 

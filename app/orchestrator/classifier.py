@@ -140,8 +140,11 @@ def rule_based_classify(message: str) -> IntentResult | None:
     )
     # Direct add without cart word (e.g. "add iphone 18 pro max and boat wired earphones")
     cart_direct_add = re.search(r'^\s*add\b\s+(.+)', msg)
+    # Bare number reply — user picking from a numbered product disambiguation list (e.g. "1", "2", "3")
+    # No other intent rules fire for bare numbers, so this guards against LLM misrouting.
+    bare_number_reply = re.match(r'^\s*\d{1,2}\s*$', msg)
 
-    if cart_exact or cart_checkout_conv or cart_natural or cart_conversational or cart_direct_add:
+    if cart_exact or cart_checkout_conv or cart_natural or cart_conversational or cart_direct_add or bare_number_reply:
         intents.append("CART_ACTION")
         coupon_match = re.search(r'\b(SAVE\d+|FLAT\d+|NEWUSER|ELECTRONICS\d+)\b', msg, re.IGNORECASE)
         if coupon_match:

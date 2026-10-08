@@ -218,7 +218,8 @@ async def clear_cart(
         raise HTTPException(status_code=401, detail="Authentication required.")
     from app.database.db import get_conn
     with get_conn() as conn:
-        conn.execute("DELETE FROM carts WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM cart_items WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM cart_sessions WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM draft_orders WHERE session_id = ?", (session_id,))
         conn.commit()
     return {"status": "cleared", "session_id": session_id}
