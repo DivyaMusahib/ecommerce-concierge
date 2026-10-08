@@ -80,7 +80,9 @@ def _fuzzy_match(query: str) -> dict | list | None:
         same_cat_siblings = [r for r in sibling_candidates if r["category"] == exact_match["category"]]
         if same_cat_siblings:
             # Multiple products in the same family → AMBIGUOUS
-            return [exact_match] + same_cat_siblings
+            family = [exact_match] + same_cat_siblings
+            family.sort(key=lambda x: x["name"])
+            return family
         # Only one product with this key, no same-category siblings → unambiguous
         return exact_match
 
@@ -107,12 +109,14 @@ def _fuzzy_match(query: str) -> dict | list | None:
     if len(strict_matches) == 1:
         return strict_matches[0]
     if len(strict_matches) > 1:
+        strict_matches.sort(key=lambda x: x["name"])
         return strict_matches  # Truly ambiguous strict matches
     # Fall back to all name matches (strict + loose) if no strict winner
     all_name_matches = strict_matches + loose_matches
     if len(all_name_matches) == 1:
         return all_name_matches[0]
     if len(all_name_matches) > 1:
+        all_name_matches.sort(key=lambda x: x["name"])
         return all_name_matches  # Ambiguous name match
 
     # ── Step 3: Scored word-level matching ──────────────────────────────────
@@ -157,6 +161,7 @@ def _fuzzy_match(query: str) -> dict | list | None:
         return top_matches[0]
 
     # Multiple equally-scored candidates → ambiguous, caller must ask user
+    top_matches.sort(key=lambda x: x["name"])
     return top_matches
 
 

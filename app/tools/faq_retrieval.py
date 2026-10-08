@@ -21,7 +21,7 @@ _INDEX_PATH = os.path.join(_DIR, "..", "..", "data", "faq_faiss_index_gemini")
 
 # Gemini embeddings — text-embedding-004 is the latest stable model supported
 # on the v1beta API endpoint used by langchain-google-genai
-_EMBEDDING_MODEL = "models/text-embedding-004"
+_EMBEDDING_MODEL = "models/embedding-001"
 
 vector_store = None
 _embeddings = None

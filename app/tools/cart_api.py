@@ -151,7 +151,7 @@ def add_to_cart(product_name: str, quantity: int = 1) -> str:
         return json.dumps({
             "action": "STOP_AND_ASK_USER",
             "error": "Ambiguous product — multiple matches found. Do NOT add any item. You MUST ask the user to pick one.",
-            "message": f"I found {len(match)} products matching '{product_name}'. Which one would you like to add?",
+            "message": f"I found {len(match)} products matching '{product_name}'. Which one would you like to add?\n" + "\n".join(f"{i+1}. {r['name']} — ₹{r['price']:,}" for i, r in enumerate(match)),
             "matches": [{"name": r["name"], "category": r["category"], "price": f"₹{r['price']:,}"} for r in match],
         })
 
@@ -396,6 +396,24 @@ def checkout() -> str:
         "confirmation_required": True,
         "message": f"Your order total is Rs.{total}. Please confirm to place this order.",
     })
+
+@tool
+def confirm_order() -> str:
+    """
+    Confirm and place the pending order. Call this AFTER the user has agreed to the checkout summary.
+    """
+    sid = _sid()
+    uid = _uid()
+    db_draft = get_latest_checkout_summary(sid)
+    
+    if not db_draft:
+        return json.dumps({"error": "No pending checkout found. Please run checkout first."})
+        
+    try:
+        res = confirm_checkout(sid, uid, db_draft)
+        return json.dumps({"action": "order_placed", "order_id": res["order_id"], "status": res["status"]})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 def confirm_checkout(session_id: str, user_id: str, draft_summary: dict, delivery_fee: float = 0) -> dict:
     """

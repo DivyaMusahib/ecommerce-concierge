@@ -19,6 +19,7 @@ from app.tools.cart_api import (
     get_cart,
     remove_from_cart,
     save_shipping_address,
+    confirm_order,
 )
 from app.tools.memory_tools import (
     forget_user_preference,
@@ -74,9 +75,8 @@ ANTI-HALLUCINATION RULES (CRITICAL — NEVER VIOLATE):
    separately and report each result individually (success or failure per item).
 
 IMPORTANT RULES:
-1. For checkout, ALWAYS call the `checkout` tool. When you do, you MUST append the exact JSON string
-   returned by the tool to your final response, wrapped in a ```json``` markdown block.
-   This is REQUIRED to trigger the frontend confirmation UI.
+1. For checkout, ALWAYS call the `checkout` tool to generate the summary. Show the summary to the user (in normal text, NOT JSON) and ask them to confirm.
+2. Once the user confirms, call the `confirm_order` tool to finalize the purchase.
 2. When adding items, confirm ONLY what was successfully added and show the updated cart.
 3. When applying coupons, show the discount clearly.
 4. Use get_cart to show current cart state when asked.
@@ -86,7 +86,7 @@ IMPORTANT RULES:
 Be honest, clear about prices and totals. Always confirm write actions."""
 
 _tools = [
-    add_to_cart, remove_from_cart, get_cart, apply_coupon_to_cart, checkout,
+    add_to_cart, remove_from_cart, get_cart, apply_coupon_to_cart, checkout, confirm_order,
     check_shipping_address, save_shipping_address,
     remember_user_preference, recall_user_preferences, forget_user_preference,
 ]
