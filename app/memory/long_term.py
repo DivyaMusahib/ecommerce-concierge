@@ -73,6 +73,7 @@ async def _pg_save_pref(user_id: str, key: str, value: str) -> dict:
             ON CONFLICT (user_id, pref_key) DO UPDATE
             SET pref_value = EXCLUDED.pref_value, updated_at = NOW()
         """, user_id, key, value)
+        await conn.execute("UPDATE users SET updated_at = NOW() WHERE user_id = $1", user_id)
         rows = await conn.fetch(
             "SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1",
             user_id,
@@ -88,6 +89,7 @@ async def _pg_delete_pref(user_id: str, key: str) -> dict:
             "DELETE FROM user_preferences WHERE user_id = $1 AND pref_key = $2",
             user_id, key,
         )
+        await conn.execute("UPDATE users SET updated_at = NOW() WHERE user_id = $1", user_id)
         rows = await conn.fetch(
             "SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1",
             user_id,
@@ -102,6 +104,7 @@ async def _pg_clear_prefs(user_id: str) -> bool:
         await conn.execute(
             "DELETE FROM user_preferences WHERE user_id = $1", user_id
         )
+        await conn.execute("UPDATE users SET updated_at = NOW() WHERE user_id = $1", user_id)
     return True
 
 
